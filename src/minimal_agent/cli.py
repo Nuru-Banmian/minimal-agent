@@ -43,7 +43,11 @@ def main() -> int:
                 try:
                     answer = runtime.run(text)
                 except (ModelError, SessionError) as error:
-                    print(f"请求失败：{error} 本轮未写入历史。", file=sys.stderr)
+                    print(
+                        f"请求失败：{error} 本轮未写入历史；"
+                        "已执行的待办可能已保存，请先查询再重试。",
+                        file=sys.stderr,
+                    )
                     continue
                 print(f"助手：{answer}")
     except SessionError as error:

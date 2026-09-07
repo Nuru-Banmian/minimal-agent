@@ -4,7 +4,8 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
+from uuid import uuid4
 
 from minimal_agent.client import Message
 
@@ -60,6 +61,11 @@ class SessionStore:
                     "sequence INTEGER NOT NULL, payload TEXT NOT NULL, "
                     "PRIMARY KEY (user_id, session_id, sequence))"
                 )
+                self.connection.execute(
+                    "CREATE TABLE IF NOT EXISTS todos ("
+                    "id TEXT PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL, "
+                    "content TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0)"
+                )
         except BaseException:
             self.close()
             raise
@@ -97,3 +103,48 @@ class SessionStore:
             finally:
                 if self._lock is not None:
                     self._lock.close()
+
+    def todo(
+        self, action: str, content: str | None = None, id: str | None = None
+    ) -> dict[str, Any]:
+        """Execute with the store's identity, never with model-supplied identity."""
+        if action == "add":
+            assert content is not None
+            item = {"id": uuid4().hex, "content": content.strip(), "completed": False}
+            with self.connection:
+                self.connection.execute(
+                    "INSERT INTO todos (id, user_id, session_id, content) VALUES (?, ?, ?, ?)",
+                    (item["id"], *self.identity, item["content"]),
+                )
+            return {"outcome": "added", "item": item}
+        if action == "complete":
+            with self.connection:
+                self.connection.execute("BEGIN IMMEDIATE")
+                row = self.connection.execute(
+                    "SELECT content, completed FROM todos "
+                    "WHERE user_id = ? AND session_id = ? AND id = ?",
+                    (*self.identity, id),
+                ).fetchone()
+                if row is None:
+                    return {
+                        "outcome": "not_found",
+                        "message": "当前 session 找不到该 ID，未完成任何待办。",
+                    }
+                self.connection.execute(
+                    "UPDATE todos SET completed = 1 "
+                    "WHERE user_id = ? AND session_id = ? AND id = ?",
+                    (*self.identity, id),
+                )
+            return {
+                "outcome": "already_completed" if row[1] else "completed",
+                "item": {"id": id, "content": row[0], "completed": True},
+            }
+        rows = self.connection.execute(
+            "SELECT id, content, completed FROM todos "
+            "WHERE user_id = ? AND session_id = ? ORDER BY rowid",
+            self.identity,
+        )
+        return {
+            "outcome": "listed",
+            "items": [{"id": row[0], "content": row[1], "completed": bool(row[2])} for row in rows],
+        }

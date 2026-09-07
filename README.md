@@ -256,3 +256,77 @@ try {
 本步全量离线验证：`83 passed, 5 skipped`（43.92 秒，5 个真实 API 测试默认跳过；本步真实重启测试已单独通过）。mypy 检查 8 个源文件通过，Ruff 静态与格式检查通过。
 
 本步双轴审阅：固定差异 `git diff 89b5a74aa63cf20123787a0edf4c3a8a853ad3c7...2b42622`，Standards 0 项发现，Spec 0 项发现；两位只读子代理分别核对规范/代码异味和 Issue #4/#1 需求。Windows 与 Linux 目标的 mypy 均通过（实际运行测试环境仅 Windows），`git diff --check` 通过。实现提交 `2b42622`；Issue #4 保持打开，等待用户审阅，未推送或合并。
+
+## Issue #5：mock search 与持久 todo
+
+默认工具现在为 `calculator`、`search`、`todo`。Runtime 仍用同一个注册表执行循环：模型提出调用 → Schema 校验 → 执行函数 → 回填工具结果 → 再次请求模型。没有按新工具名称增加主循环分支。
+
+`search` 是确定性本地模拟检索，不联网。当前仅有 **2026-09-01 上海小雨、22–27°C、建议带伞** 的教学资料，返回标题、`mock:weather:shanghai:2026-09-01` 来源、内容、`mock: true` 和提示。用短关键词，例如 `上海天气`、`上海 天气`；空白分隔关键词全部匹配才命中，不做语义搜索。无命中返回空列表和明确提示。模型被要求在最终回复保留固定日期及“模拟、非实时”，不能当成当天的天气预报。
+
+`todo` 的参数只有 `action`、`content`、`id`：
+
+| action | 参数 | 结果 |
+| --- | --- | --- |
+| add | 非空内容 content | added，返回 UUID 稳定 ID、内容和 completed=false |
+| list | 无其他参数 | listed，按添加顺序返回当前 session 的全部待办及完成状态 |
+| complete | 明确的 id | completed / already_completed / not_found；后者不会修改其他条目 |
+
+注册时将当前 SessionStore 的方法绑定为执行函数，模型没有 user_id/session_id 参数；所有读写 SQL 都带应用提供的两个身份条件。同一数据库支持不同 session 交替运行，既有 SQLite 文件会自动创建待办表，无需重建消息表。状态以工具的 `result.outcome` 和结构化条目为准：外层 `status: ok` 表示调用正常返回，不表示 `not_found` 的完成请求成功。
+
+待办写入在工具返回前以短事务提交，不在等待模型网络响应时持有写事务。后续模型失败或 turn 未写入历史，**此前已提交的待办仍保留**；CLI 会提醒先查询再重试。add 不承诺重试幂等；complete 可重复调用，已完成时返回 already_completed。中断 turn 自动恢复留待后续步骤处理。
+
+### 两个窗口的演示
+
+两个终端分别启动（在相同目录使用同一数据库）：
+
+```powershell
+.\start.bat --user-id demo --session-id 1
+.\start.bat --user-id demo --session-id 2
+```
+
+1. 窗口 1：`查上海的示例天气，帮我记一个带伞的待办`
+2. 窗口 2：`根据我提供的本周工作内容写周报，并记一个提交周报的待办。本周已完成登录页开发和三个缺陷修复，下周准备联调。`
+3. 窗口 1：`列出我的待办`，再输入 `把带伞那项完成`。
+4. 窗口 2：`列出我的待办`，周报待办应仍未完成。
+5. `/exit` 后用原命令重启，继续查询；窗口 1 再说 `再把带伞那项完成`，应如实报告早已完成。
+
+对象未提供或“提交报告”同时可能指周报、月报时先澄清；应用拒绝缺少 ID 的 complete，不按内容猜测条目。自然语言歧义识别和模拟信息措辞由模型指令引导，真实演示验证具体案例；Schema 与 SQL 的身份隔离由应用强制执行。
+
+### 验收与实际证据
+
+| Issue #5 验收项 | 证据 |
+| --- | --- |
+| 注册 search/todo，复用 Runtime | `default_registry` 及 `test_search_to_todo_chain_survives_restart`，模型 HTTP 请求包含工具和前次执行结果 |
+| mock 数据、来源、日期、无命中 | `test_search_returns_fixed_mock_weather_through_runtime`、`test_search_no_match_is_explicit` |
+| 最终回复保留模拟、非实时 | 真实 CLI 演示 session 1 的第一轮 |
+| 稳定 ID、持久化、user/session 隔离 | `test_search_to_todo_chain_survives_restart`、`test_todo_completion_is_isolated_idempotent_and_durable` |
+| 模型不能切换身份；非法参数拒绝 | `test_invalid_todo_arguments_do_not_change_state`、发送模型的 Schema 断言 |
+| 天气→待办、周报→待办、返回窗口追问 | `test_real_search_todo_sessions_and_clarification`，九个真实 CLI 子进程交替创建/恢复 session |
+| 缺失/歧义先澄清，未知 ID 不谎报成功 | 真实演示 session 3；离线测试断言跨 session ID 返回 not_found、缺少 ID 不执行 |
+| 跨工具链、追问、无结果、重复完成、跨 session | `tests/test_search_todo.py` 的 Runtime 集成测试；真实模型演示独立开启 |
+| 后续模型失败后的已写入待办可查询 | `test_committed_todo_can_be_queried_after_model_failure` |
+
+离线测试只替换外部模型 HTTP 服务；Runtime、工具、SQLite 都是真实实现，没有直接查表代替用户行为验证。脚本化模型用例验证连续决策：收到 search 结果后再请求 todo。真实首轮模型则在同一响应提出 search 和 add 两个调用，应用按顺序执行；不能把它记成“模型收到搜索结果后才决定添加”。真实天气工具本身仍是 mock，真实的是 qwen-plus API 与 CLI 执行路径。
+
+单独运行本步真实演示（使用已配置的本地环境，不输出密钥）：
+
+```powershell
+$env:RUN_LIVE_API = '1'
+try {
+    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live.py -q -s -k search_todo --tb=short
+} finally {
+    Remove-Item Env:RUN_LIVE_API -ErrorAction SilentlyContinue
+}
+```
+
+2026-09-07 11:08:55 UTC 开始的 qwen-plus 演示：`1 passed, 5 deselected`（37.85 秒）。[完整脱敏记录](docs/evidence/issue-5-live.txt)包含实际 Prompt、回答、工具参数/结果和执行 ID。两个 session 的待办独立，重复完成返回 already_completed；缺失对象和周报/月报歧义都没有执行 complete。此证据通过反复启动真实 CLI 进程模拟两个窗口的交替使用；同时打开窗口的进程占用策略已由 Issue #4 测试覆盖。
+
+### 本步实际 Prompt 与问题处理
+
+- 用户输入：`[$implement](C:\Users\1\.agents\skills\implement\SKILL.md) #5`，并确认 Runtime.run 测试接口和审阅基点 `978ed5f22fa8e0cbec45345b319da6eb9e49487e`。读取 Issue #5/#1，确认 #4 已关闭。
+- 独立分支 `codex/search-todo`；原有未跟踪 CONTEXT.md 未修改、不纳入提交。
+- TDD：search 因 unknown_tool 失败后实现；跨工具持久待办用例因 todo 未注册失败后实现 add/list；跨 session 完成用例因 complete 不支持失败后实现隔离和重复完成；模拟/澄清指令用例先失败再补充。随后补充非法参数、无结果与模型失败的回归测试。
+- 首次真实验证在重复完成时发现模型只引用历史，不调用工具（`1 failed, 5 deselected`，25.87 秒）。[首次记录](docs/evidence/issue-5-live-first-attempt.txt)如实保留；加强 system 指令要求每次判断待办状态都读取工具，第二次完整演示通过。没有将失败记成通过。
+- 静态检查发现新增代码的长行与导入格式，已修正；本步未新增外部依赖。
+
+全量离线测试：`98 passed, 6 skipped`（51.37 秒，6 项真实 API 测试默认跳过；本步真实测试已单独通过）。mypy 检查 9 个源文件通过，Ruff 静态/格式检查通过。Issue #5 保持打开供用户审阅，本步不进入后续 Issue，不推送或合并 main。
