@@ -38,6 +38,8 @@ def test_real_search_todo_sessions_and_clarification(tmp_path):
                 "live",
                 "--session-id",
                 session,
+                "--search-provider",
+                "mock",
             ],
             input=prompt + "\n/exit\n",
             capture_output=True,
@@ -153,7 +155,17 @@ def test_real_api_remembers_name():
 
 def test_real_cli_remembers_name():
     result = subprocess.run(
-        [sys.executable, "-X", "utf8", "-m", "minimal_agent", "--db", ":memory:"],
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "minimal_agent",
+            "--db",
+            ":memory:",
+            "--search-provider",
+            "mock",
+        ],
         input="我叫小林\n我叫什么？只回答我的名字。\n/exit\n",
         capture_output=True,
         text=True,
@@ -185,6 +197,8 @@ def test_real_cli_sessions_resume(tmp_path):
             "live",
             "--session-id",
             session,
+            "--search-provider",
+            "mock",
         ]
         for prompt, result_number in [
             (f"我叫{name}，请记住我的名字，并用计算器计算 {a}+8。", expected),

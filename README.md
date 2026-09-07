@@ -332,3 +332,47 @@ try {
 全量离线测试：`98 passed, 6 skipped`（51.37 秒，6 项真实 API 测试默认跳过；本步真实测试已单独通过）。mypy 检查 9 个源文件通过，Ruff 静态/格式检查通过。Issue #5 保持打开供用户审阅，本步不进入后续 Issue，不推送或合并 main。
 
 本步双轴审阅：固定差异 `git diff 978ed5f22fa8e0cbec45345b319da6eb9e49487e...073d4e0b83ebb7fcf7a5b6dda4ae7f3d25162b69`。Standards：0 项规范违反、0 项代码异味；Spec：0 项缺失、范围外或错误实现。两位只读子代理分别完成检查；明确保留真实模型同响应多调用与离线连续决策的证据区别。最终指令调整后重新运行本步离线文件：`15 passed`（6.85 秒）；Windows/Linux 目标 mypy、Ruff 和 `git diff --check` 均通过（实际测试环境为 Windows）。实现提交 `073d4e0`。
+
+## 联网搜索（用户追加需求）
+
+用户在 Issue #5 之后提出“编写一个联网的好吗”，并选择“使用搜索 API，接受配置密钥”。本次增加可选的 Tavily 搜索，原来的 mock 模式和教学验收仍可运行；这项追加需求扩展了原规划中“不接真实搜索”的范围，不涉及后续上下文压缩步骤。
+
+在 [Tavily 控制台](https://app.tavily.com/) 获取 API key，填写本地 `.env`（不要提交或发送密钥）：
+
+```dotenv
+SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=你的真实密钥
+```
+
+模型的 `LLM_MODEL`、`LLM_BASE_URL`、`DASHSCOPE_API_KEY` 仍按原配置保留，然后启动：
+
+```powershell
+.\start.bat --user-id demo --session-id web --search-provider tavily
+```
+
+可以输入：`搜索 Python 官方文档并添加一个阅读文档的待办，回答附来源链接。`
+
+CLI 会显示搜索模式。命令行参数优先于 `.env` 中的 SEARCH_PROVIDER；未配置模式默认 mock。`--search-provider mock` 可切回原来的模拟天气演示。选择 tavily 却缺少密钥时明确报配置错误，不会悄悄回退 mock；同一 session 历史可以保留，但旧 mock 搜索结果仍是模拟资料。
+
+联网模式使用 [Tavily 官方 Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)：POST 到固定 HTTPS 地址，密钥只放 Authorization 请求头，不发给模型。使用 basic 搜索，最多返回 5 条标题、网页 URL 和摘要，不请求服务商生成的答案或全文。结果标记 `mock: false`，模型被要求引用来源链接；网页摘要不保证实时，不能把联网检索当成实时天气服务。
+
+每次 HTTP 操作设 10 秒超时，不自动重试或跟随重定向；响应体最多 1 MB、单条标题最多 300 字符、摘要最多 2000 字符，裁剪会标记 truncated。模型参数只有 query，不能指定 API key 或请求地址。网络错误、超时、鉴权失败、限流、额度不足、异常响应分别返回固定工具错误码，不把服务原始错误/密钥写入 trace，不混同于“无命中”。网页内容只是外部数据，system 指令禁止执行摘要内的指令。
+
+### 联网搜索的验证
+
+`tests/test_web_search.py` 在已确认的 Runtime/CLI 接口验证：先返回网页资料再调用 todo、来源与 mock 标记、无命中、异常响应、超时/断网/鉴权/限流/额度、结果裁剪、配置缺失和命令行覆盖。模型仍是回环 HTTP 脚本服务；搜索 HTTP 使用 httpx.MockTransport，**这些通过不代表访问过真实 Tavily**。
+
+配置密钥后可显式运行真实 CLI + 模型 + Tavily 验证：
+
+```powershell
+$env:RUN_LIVE_SEARCH = '1'
+try {
+    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live_search.py -q -s
+} finally {
+    Remove-Item Env:RUN_LIVE_SEARCH -ErrorAction SilentlyContinue
+}
+```
+
+本轮检查到本地尚未配置 TAVILY_API_KEY，所以真实联网验收未执行，不记为通过。实际开发先以缺少 TavilySearch 的失败测试接入搜索，再以 HTTP 401 导致 Runtime 抛异常的失败用例补齐安全工具错误，最后以 CLI 不支持模式参数的失败用例接入配置。沿用现有 httpx，无新增依赖。
+
+本次全量离线验证：`113 passed, 7 skipped`（58.67 秒；包括新增真实联网测试在内的 7 个真实 API 测试默认跳过）。mypy、Ruff 静态与格式检查、`git diff --check` 通过。旧 CLI 演示测试显式指定 mock，避免本地切换 Tavily 配置后改变原有验收的含义。

@@ -6,7 +6,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, ValidationError
 
-from minimal_agent.search import search
+from minimal_agent.search import SearchError, search
 from minimal_agent.sessions import SessionStore
 
 
@@ -52,6 +52,8 @@ class ToolRegistry:
             return {"status": "error", "error": "invalid_arguments"}
         try:
             result = execute(**params)
+        except SearchError as error:
+            return {"status": "error", "error": str(error)}
         except (ValueError, OverflowError, ZeroDivisionError):
             return {"status": "error", "error": "invalid_calculation"}
         return {"status": "ok", "result": result}
@@ -99,18 +101,25 @@ def calculator_registry() -> ToolRegistry:
     return registry
 
 
-def default_registry(store: SessionStore) -> ToolRegistry:
+def default_registry(
+    store: SessionStore, search_tool: Callable[[str], dict[str, Any]] = search
+) -> ToolRegistry:
     registry = calculator_registry()
     registry.register(
         "search",
-        "搜索固定模拟资料，非实时、非联网；用简短关键词，如 上海天气 或 上海 天气。无命中不猜测。",
+        (
+            "搜索固定模拟资料，非实时、非联网；用简短关键词，如 上海天气 或 上海 天气。"
+            if search_tool is search
+            else "联网检索网页，返回标题、来源链接和摘要；不保证信息实时。"
+        )
+        + "无命中不猜测，搜索失败不得当作无命中。",
         {
             "type": "object",
             "properties": {"query": {"type": "string", "minLength": 1}},
             "required": ["query"],
             "additionalProperties": False,
         },
-        search,
+        search_tool,
     )
     registry.register(
         "todo",

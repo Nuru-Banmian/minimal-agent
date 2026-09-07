@@ -17,6 +17,7 @@ def run_cli(model_server, text, overrides=None, cwd=None, args=()):
             "LLM_MODEL": "qwen-plus",
             "LLM_BASE_URL": model_server.url,
             "LLM_TIMEOUT_SECONDS": "2",
+            "SEARCH_PROVIDER": "mock",
         }
     )
     for name, value in (overrides or {}).items():
@@ -208,7 +209,12 @@ def test_cli_displays_identity_and_restores_session(model_server, tmp_path):
 @contextmanager
 def interactive_cli(model_server, database, session):
     env = os.environ.copy()
-    env.update(DASHSCOPE_API_KEY="test-key", LLM_MODEL="qwen-plus", LLM_BASE_URL=model_server.url)
+    env.update(
+        DASHSCOPE_API_KEY="test-key",
+        LLM_MODEL="qwen-plus",
+        LLM_BASE_URL=model_server.url,
+        SEARCH_PROVIDER="mock",
+    )
     process = subprocess.Popen(
         [
             sys.executable,
