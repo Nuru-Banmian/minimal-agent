@@ -94,13 +94,13 @@ git diff --check
 ```powershell
 $env:RUN_LIVE_API = '1'
 try {
-    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live.py -q -s --tb=short
+    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live.py -q -s -k "not calculator" --tb=short
 } finally {
     Remove-Item Env:RUN_LIVE_API -ErrorAction SilentlyContinue
 }
 ```
 
-真实测试验证客户端与 CLI 追问能返回“小林”，只打印时间、模型和匹配结果，不打印 key 或原始响应。Function Calling 测试向真实服务发送 `echo_name` Schema 并强制选择该函数，检查返回的调用 ID、函数名及 JSON 参数，不执行工具，也不实现下一步 Runtime。实测 Qwen 强制工具调用可能返回 `finish_reason=stop`，因此按实际 `tool_calls` 校验，不能只靠结束标记判断有无工具调用。未显式开启时三个真实测试跳过，开启后配置错误或请求失败会失败，绝不切换到替身。
+真实测试验证客户端与 CLI 追问能返回“小林”，只打印时间、模型和匹配结果，不打印 key 或原始响应。Function Calling 测试向真实服务发送 `echo_name` Schema 并强制选择该函数，检查返回的调用 ID、函数名及 JSON 参数，不执行工具，也不实现下一步 Runtime。实测 Qwen 强制工具调用可能返回 `finish_reason=stop`，因此按实际 `tool_calls` 校验，不能只靠结束标记判断有无工具调用。未显式开启时所有真实测试跳过（当前共四个），开启后配置错误或请求失败会失败，绝不切换到替身。
 
 ### Issue #2 验收证据（2026-09-07）
 
@@ -191,3 +191,5 @@ try {
 - 当前分支 `codex/tools-first-slice`，实现开始基点 `5d353ca852765e52d6f61dea88f40c5f1cd11a36`；用户原有未跟踪的 `CONTEXT.md` 未修改、未纳入提交。
 
 本步全量离线验证：73 passed, 4 skipped（32.72 秒，4 个真实 API 测试默认跳过）；本步真实 calculator 测试已单独运行通过。mypy 检查 7 个源文件通过，Ruff 静态与格式检查、git diff --check 通过。
+
+本步双轴审查：基于 `git diff 5d353ca...74702c7`，Standards 0 项发现；Spec 发现 1 项旧 README 真实测试命令范围与请求数说明不一致，已将旧命令限定为原来的三项测试，并将当前默认跳过数更新为四个。未发现代码功能缺口。
