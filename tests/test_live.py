@@ -11,10 +11,30 @@ import pytest
 
 from minimal_agent.client import Message, ModelClient
 from minimal_agent.config import Settings
+from minimal_agent.runtime import Runtime
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_LIVE_API") != "1", reason="真实 API 验证未显式开启"
 )
+
+
+def test_real_calculator_loop_and_followup():
+    settings = Settings.from_env()
+    assert settings.base_url.startswith("https://")
+    events = []
+    with ModelClient(settings) as client:
+        runtime = Runtime(client, trace=events.append)
+        first = runtime.run("用计算器计算 (12+8)*3")
+        second = runtime.run("结果再除以 4")
+    tools = [e for e in events if e["event"] == "tool"]
+    assert [(e["turn"], e.get("result")) for e in tools] == [(1, 20), (1, 60), (2, 15)]
+    assert all(e["status"] == "ok" and e["name"] == "calculator" for e in tools)
+    assert "60" in first and "15" in second
+    print(f"真实 Runtime: {datetime.now(UTC).isoformat()} model={settings.model}")
+    for event in events:
+        # Omit model prose; record execution facts only, never settings or HTTP headers.
+        if event["event"] != "action":
+            print(json.dumps(event, ensure_ascii=False))
 
 
 def test_real_api_remembers_name():

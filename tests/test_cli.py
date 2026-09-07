@@ -145,3 +145,40 @@ def test_cli_timeout_is_not_an_assistant_answer(model_server):
     assert "超时" in result.stderr
     assert "助手：" not in result.stdout
     assert "Traceback" not in result.stderr
+
+
+def test_cli_calculator_loop_and_trace(model_server):
+    model_server.replies.put(
+        (
+            200,
+            {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "先相加",
+                            "tool_calls": [
+                                {
+                                    "id": "cli-call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "calculator",
+                                        "arguments": '{"operation":"add","a":12,"b":8}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+        )
+    )
+    model_server.answer("20")
+    result = run_cli(model_server, "用计算器计算 12+8\n/exit\n")
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "助手：20" in result.stdout
+    assert '"tool_call_id": "cli-call"' in result.stdout
+    assert '"result": 20' in result.stdout
+    assert '"reason": "final_answer"' in result.stdout

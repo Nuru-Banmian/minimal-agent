@@ -1,6 +1,6 @@
-# 最小 Agent：第一步普通聊天
+# 最小 Agent：calculator 工具循环
 
-实现 [Issue #2](https://github.com/Nuru-Banmian/minimal-agent/issues/2)：Python CLI 通过阿里云百炼 OpenAI 兼容接口请求真实模型，支持本进程内连续追问。当前没有工具执行或 Agent Runtime 循环，下一步需经用户审阅后再开始。
+当前实现 [Issue #3](https://github.com/Nuru-Banmian/minimal-agent/issues/3)：在已有真实模型 CLI 上加入工具注册、calculator 和手写 Runtime 循环，支持本进程内追问。实现后保持 Issue 打开供用户审阅；后续 session 持久化等功能尚未开始。
 
 ## 安装与启动
 
@@ -46,10 +46,10 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 - `/exit`、`/quit`（不区分大小写）、EOF 或 Ctrl+C：结束进程，历史随之消失。Windows EOF 为 Ctrl+Z 后回车，Linux/macOS 为 Ctrl+D。
 - 配置缺失或无效：向 stderr 输出清楚提示，退出码 2，不请求模型。
 - 鉴权失败、权限不足、限流、服务错误、连接失败或超时：向 stderr 输出安全提示，不输出服务端原始异常、密钥或堆栈，可继续输入。
-- 请求失败或返回不完整/空白/工具调用内容：不把它显示为成功回答，不将该轮问答写入历史，之前成功历史保留。需要重新输入失败的问题。
+- 请求失败或返回不完整/空白/畸形协议内容：不把它显示为成功回答，不将该轮问答写入历史，之前成功历史保留。需要重新输入失败的问题。
 - 正常结束退出码 0；即使期间某轮失败，随后正常退出仍为 0。脚本验收真实请求成功应使用下面的显式真实 API 测试。
 
-请求没有自动重试；HTTP 客户端不读取系统代理环境变量。当前历史随成功轮次增长，尚未做持久化、压缩或总调用预算，这些属于后续 Issue。
+请求没有自动重试；HTTP 客户端不读取系统代理环境变量。当前历史随成功轮次增长，每 turn 最多 8 次主模型调用；尚未做持久化、压缩或跨 turn 总调用预算，这些属于后续 Issue。
 
 ## 一次请求如何工作
 
@@ -69,10 +69,11 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 代码阅读顺序：
 
 1. `src/minimal_agent/config.py` 加载当前目录 `.env`，以已有环境变量优先，读取并校验配置。
-2. `src/minimal_agent/cli.py` 负责输入输出，准备历史并在成功后追加问答。
+2. `src/minimal_agent/cli.py` 负责输入输出和显示 trace，调用公共 `Runtime.run(text)`。
 3. `src/minimal_agent/client.py` 负责 HTTP 请求、协议解析、错误转换；它不会自动保存历史，也不会执行工具。
 
-当前每条非空输入只发起一次模型 API 请求。Agent Runtime 则需要由应用读取模型的工具调用、执行工具、回填结果，并决定是否继续请求以及何时停止；那是下一步要实现的控制流。
+4. `src/minimal_agent/runtime.py` 区分外层 turn 与内层 step，回填工具结果并判断继续或停止；只有完成的 turn 才进入历史。
+5. `src/minimal_agent/tools.py` 注册工具，启动时检查 JSON Schema，执行前解析 JSON 并校验参数，调用真实 Python 四则运算函数。
 
 ## 测试与验收
 
@@ -115,7 +116,7 @@ try {
 
 初次实现全量结果：`39 passed, 1 skipped`（17.09 秒，当时尚无配置，真实 API 跳过）；mypy 检查 5 个源文件通过，Ruff 静态检查和格式检查通过，`git diff --check` 通过。安装生成的 `minimal-agent.exe` 在无配置时显示缺失的三个变量名称；`git check-ignore` 确认密钥文件、虚拟环境、数据库与日志路径均被忽略。
 
-配置后的真实验证（2026-09-07）：客户端两轮测试 `1 passed`（1.71 秒，08:43 UTC）；真实 CLI 两轮与正常退出通过；Function Calling 最终 `1 passed`（1.27 秒），模型均为 `qwen-plus`，姓名匹配“小林”，函数 `echo_name` 与 JSON 参数匹配，调用 ID 非空。期间首次 Function Calling 测试因只接受 `finish_reason=tool_calls` 而失败；安全诊断确认实际为 `stop`，修正检查后重跑通过。以上为实际 API 返回的脱敏结论，未记录密钥、完整地址或原始响应。保持 Issue #2 打开，等待用户审阅；不进入下一步。
+配置后的真实验证（2026-09-07）：客户端两轮测试 `1 passed`（1.71 秒，08:43 UTC）；真实 CLI 两轮与正常退出通过；Function Calling 最终 `1 passed`（1.27 秒），模型均为 `qwen-plus`，姓名匹配“小林”，函数 `echo_name` 与 JSON 参数匹配，调用 ID 非空。期间首次 Function Calling 测试因只接受 `finish_reason=tool_calls` 而失败；安全诊断确认实际为 `stop`，修正检查后重跑通过。以上为实际 API 返回的脱敏结论，未记录密钥、完整地址或原始响应。这是 Issue #2 当时的验收记录；本次开始时已确认它已关闭。
 
 补充实现后的离线全量结果：`41 passed, 3 skipped`（19.07 秒，三个真实测试已在上面独立运行验证）；mypy、Ruff 静态与格式检查、`git diff --check` 通过。
 
@@ -129,3 +130,64 @@ try {
 - 实际审阅任务：以 `git diff cbd7e7c...HEAD` 审阅实现提交 `7c4ddc5`，两个只读子代理分别检查仓库规范与代码异味、Issue #2 及父 Issue #1 的需求覆盖。Standards：0 项发现；Spec：0 项代码问题、1 项已知待验证验收（真实账号可用性及 Function Calling）。未将待验证项记为通过。
 - 后续实际用户输入：“你帮我创建一个.venv文件让我填写”“填好了”。创建了 `.env` 配置文件，随后补充自动加载、已有环境变量优先、UTF-8 BOM 测试，并完成真实 API 验证；未实现下一步工具循环。
 - 配置接入后，以同一基点复审至 `d74ad82`：Standards 0 项发现；Spec 0 项发现，上轮真实账号待验证项已补齐。复审只读取提交差异，不读取 `.env`，不重复付费请求。
+
+
+## Issue #3：使用、协议与验收
+
+更新依赖后照常运行 `start.bat` 或 `python -m minimal_agent`，输入 `用计算器计算 (12+8)*3`，再输入 `结果再除以 4`。CLI 默认在 stdout 输出 JSON trace，包含 turn、step、工具名称、原始 arguments JSON、调用 ID、状态、结果和停止原因。模型可直接回答，也可返回简短行动说明；不请求、展示或回灌完整隐藏思维链。trace 会显示本轮工具参数，适合本地学习，程序不自动写日志文件。
+
+`calculator` 参数为 `operation`（`add`、`subtract`、`multiply`、`divide`）、`a`（左操作数）、`b`（右操作数）。不接受额外字段、字符串数值、布尔值、非有限数值、除零或任意表达式代码；不用 `eval`。采用 Python 数值运算，浮点数可能有通常的精度误差。
+
+Runtime 每步发送注册信息，由模型的 `tool_calls` 决定路径，没有关键词路由。一个 assistant 消息先完整加入上下文，然后串行执行其全部调用；每条 tool 消息用 `tool_call_id` 配对，并以 JSON 返回 `status: ok/result` 或 `status: error/error`。即使同时有 content，仍继续工具循环。未知工具和非法参数回填错误，模型可在下一步修正；修正请求也计入默认 8 次上限。第 8 步有最终答案可成功，否则回填该步结果后停止并报告未完成，不额外请求第 9 次。当前 calculator 无外部副作用，失败 turn 整体不写入历史。
+
+协议转换手写实现；无答案且无调用、重复调用 ID、缺失名称/ID、非字符串 arguments 或被截断的响应均报告协议错误。JSON arguments 的解析及 Schema 校验由注册表在实际执行前完成。注册表使用 JSON Schema Draft 2020-12；重复名称和无效 Schema 在注册时抛出异常，默认注册发生在 CLI 接受输入之前。
+
+协议参考已于 2026-09-07 再次核对：[阿里云 Function Calling](https://help.aliyun.com/zh/model-studio/qwen-function-calling)。`stop` 和 `tool_calls` 结束标记都可能携带有效调用，实际路径以解析后的调用列表为准。
+
+### 真实 API 证据
+
+显式运行本步演示（会消耗模型额度；没有配置会失败）：
+
+```powershell
+$env:RUN_LIVE_API = '1'
+try {
+    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live.py -q -s -k calculator --tb=short
+} finally {
+    Remove-Item Env:RUN_LIVE_API -ErrorAction SilentlyContinue
+}
+```
+
+2026-09-07 09:02:06 UTC，真实 `qwen-plus`，公共 Runtime + 真实 calculator：`1 passed, 3 deselected`（4.57 秒）。实际两条用户输入就是上述计算与追问；模型回答分别包含 60、15，不断言固定措辞。下面是实际事件的摘录，省略调用 ID，仅为易读性缩短字段：
+
+| turn | step | 实际事件 | 结果/停止原因 |
+| --- | --- | --- | --- |
+| 1 | 1 | model_request；calculator add(12,8) | ok，20 |
+| 1 | 1 | 同一响应第二个调用：calculator multiply(20,3) | ok，60 |
+| 1 | 2 | model_request；stop | final_answer |
+| 2 | 1 | model_request；calculator divide(60,4) | ok，15.0 |
+| 2 | 2 | model_request；stop | final_answer |
+
+共 4 次模型请求、3 次真实工具执行。第一响应一次提出两个调用，不代表模型在加法结果返回后才提出乘法；连续两次决策读取前次结果的路径另由确定性离线测试验证。离线模型是回环 HTTP 脚本化服务，Runtime 和 calculator 均是真实实现；只有注册表“执行前拒绝”测试使用记录调用的测试函数。
+
+| Issue #3 验收项 | 证据 |
+| --- | --- |
+| 唯一名称、描述、Schema、执行函数；重复/无效定义拒绝 | `tests/test_tools.py` 注册表公共接口测试 |
+| 注册信息发送模型、直接回答及追问 | `test_runtime_direct_reply_and_followup` |
+| 手写协议解析、执行前参数校验 | `test_runtime_protocol_errors_stop_without_executing`、注册表测试 |
+| calculator 四则运算、非法数值、除零 | `test_real_calculator_through_registry`、`test_runtime_bad_arguments_can_be_corrected` |
+| 单次/连续/多调用、调用 ID 配对 | `tests/test_runtime.py` 中三个对应循环测试 |
+| content 与调用并存、空答案协议错误 | `test_runtime_executes_real_calculator_before_final_answer`、协议错误测试 |
+| 默认 8 次上限且计入修正轮次 | `test_runtime_default_limit_counts_corrections_and_allows_next_turn` |
+| turn/step/参数/状态/停止原因 trace | Runtime trace 断言、`test_cli_calculator_loop_and_trace` |
+| 公共 Runtime 离线覆盖且执行真实 calculator | `tests/test_runtime.py` |
+| 真实模型计算与追问 | `test_real_calculator_loop_and_followup`，上述真实记录 |
+
+### 本步实际 Prompt 与开发记录
+
+- 实际用户输入：`[$implement](C:\Users\1\.agents\skills\implement\SKILL.md) #3`。实现依据为 Issue #3 与父 Issue #1，公共测试边界采用父 Issue 已指定的 Runtime、CLI、注册表及客户端 HTTP。
+- 先运行直接回答测试，确认缺少 Runtime 模块导致失败；实现后通过。随后单调用测试因旧解析器拒绝工具响应失败，接入协议与执行循环后通过；CLI 工具测试也先因旧入口仅接受文本失败，再接入 Runtime 后通过。
+- 实际问题：一次补丁对同一文件同时声明删除与新增，被工具拒绝且未应用；随后改为分别更新文件。初次静态检查发现测试导入位置和长行，调整导入并格式化。
+- 真实模型把两次计算放在同一响应中；记录真实执行事实，没有改写为预想的多步决策。
+- 当前分支 `codex/tools-first-slice`，实现开始基点 `5d353ca852765e52d6f61dea88f40c5f1cd11a36`；用户原有未跟踪的 `CONTEXT.md` 未修改、未纳入提交。
+
+本步全量离线验证：73 passed, 4 skipped（32.72 秒，4 个真实 API 测试默认跳过）；本步真实 calculator 测试已单独运行通过。mypy 检查 7 个源文件通过，Ruff 静态与格式检查、git diff --check 通过。
