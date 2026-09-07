@@ -1,7 +1,10 @@
 import math
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
+
+from dotenv import load_dotenv
 
 
 class ConfigError(Exception):
@@ -45,6 +48,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        load_dotenv(Path.cwd() / ".env", override=False, encoding="utf-8-sig", interpolate=False)
         names = ("LLM_MODEL", "LLM_BASE_URL", "DASHSCOPE_API_KEY")
         missing = [name for name in names if not os.environ.get(name, "").strip()]
         if missing:

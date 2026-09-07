@@ -5,7 +5,7 @@ import sys
 import pytest
 
 
-def run_cli(model_server, text, overrides=None):
+def run_cli(model_server, text, overrides=None, cwd=None):
     env = os.environ.copy()
     env.update(
         {
@@ -16,7 +16,11 @@ def run_cli(model_server, text, overrides=None):
             "LLM_TIMEOUT_SECONDS": "2",
         }
     )
-    env.update(overrides or {})
+    for name, value in (overrides or {}).items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     return subprocess.run(
         [sys.executable, "-m", "minimal_agent"],
         input=text,
@@ -24,6 +28,7 @@ def run_cli(model_server, text, overrides=None):
         text=True,
         encoding="utf-8",
         env=env,
+        cwd=cwd,
         timeout=10,
     )
 
@@ -83,6 +88,31 @@ def test_cli_configuration_errors_are_clear(model_server, name, value, hint):
     assert hint in result.stderr
     assert "Traceback" not in result.stderr
     assert "secret" not in result.stderr
+    assert model_server.requests.empty()
+
+
+@pytest.mark.parametrize("environment_key", [None, "environment-key"])
+def test_cli_loads_local_dotenv_with_environment_priority(model_server, tmp_path, environment_key):
+    (tmp_path / ".env").write_text(
+        f'LLM_MODEL=qwen-plus\nLLM_BASE_URL="{model_server.url}"\nDASHSCOPE_API_KEY="file-key"\n',
+        encoding="utf-8-sig",
+    )
+    model_server.answer("配置已加载")
+    result = run_cli(
+        model_server,
+        "你好\n/exit\n",
+        {
+            "LLM_MODEL": None,
+            "LLM_BASE_URL": None,
+            "DASHSCOPE_API_KEY": environment_key,
+        },
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0
+    assert "助手：配置已加载" in result.stdout
+    assert result.stderr == ""
+    request = model_server.requests.get_nowait()
+    assert request["authorization"] == f"Bearer {environment_key or 'file-key'}"
     assert model_server.requests.empty()
 
 
