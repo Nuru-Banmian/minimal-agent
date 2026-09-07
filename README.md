@@ -4,6 +4,8 @@
 
 ## 安装与启动
 
+已安装依赖并填写 `.env` 后，Windows 可直接双击项目根目录的 `start.bat`，或在 PowerShell 执行 `.\start.bat`。脚本会自动切到项目目录、使用 `.venv` 和 UTF-8 启动；启动失败时保留窗口供查看错误。输入 `/exit` 或 `/quit` 退出聊天。
+
 支持 Python 3.11+；实际验证环境为 Windows、Python 3.13.5。使用 HTTPX 直接发送 HTTP，方便观察消息协议；python-dotenv 加载本地配置，不使用 Agent 框架。
 
 在项目根目录的 PowerShell 中执行，无需激活虚拟环境：
