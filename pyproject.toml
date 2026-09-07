@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimal-agent"
+version = "0.1.0"
+description = "A minimal, synchronous Qwen chat CLI for learning agent fundamentals"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.28.1,<0.29", "python-dotenv>=1.1,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "mypy>=1.15,<2", "ruff>=0.11,<1"]
+
+[project.scripts]
+minimal-agent = "minimal_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
