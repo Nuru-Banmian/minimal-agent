@@ -376,3 +376,5 @@ try {
 本轮检查到本地尚未配置 TAVILY_API_KEY，所以真实联网验收未执行，不记为通过。实际开发先以缺少 TavilySearch 的失败测试接入搜索，再以 HTTP 401 导致 Runtime 抛异常的失败用例补齐安全工具错误，最后以 CLI 不支持模式参数的失败用例接入配置。沿用现有 httpx，无新增依赖。
 
 本次全量离线验证：`113 passed, 7 skipped`（58.67 秒；包括新增真实联网测试在内的 7 个真实 API 测试默认跳过）。mypy、Ruff 静态与格式检查、`git diff --check` 通过。旧 CLI 演示测试显式指定 mock，避免本地切换 Tavily 配置后改变原有验收的含义。
+
+联网增量实现提交 `d14188b`，双轴只读审阅基于 `978ed5f...d14188b`（重点 `2289524...d14188b`）：Standards 0 项、Spec 0 项；真实 Tavily 尚未验证的限制保留。CLI 测试隔离调整后，双进程用例复验 `2 passed, 28 deselected`（6.22 秒）。
