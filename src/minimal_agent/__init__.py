@@ -1,0 +1,1 @@
+"""Minimal Qwen chat application."""
