@@ -1,6 +1,6 @@
-# 最小 Agent：calculator 工具循环
+# 最小 Agent：持久化独立 session
 
-当前实现 [Issue #3](https://github.com/Nuru-Banmian/minimal-agent/issues/3)：在已有真实模型 CLI 上加入工具注册、calculator 和手写 Runtime 循环，支持本进程内追问。实现后保持 Issue 打开供用户审阅；后续 session 持久化等功能尚未开始。
+当前实现 [Issue #4](https://github.com/Nuru-Banmian/minimal-agent/issues/4)：按 user_id 与 session_id 隔离 SQLite 历史，支持退出后继续对话和 calculator 追问。本步保持 Issue 打开供审阅，不进入下一步。
 
 ## 安装与启动
 
@@ -25,7 +25,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 若已创建 `.venv`，可跳过第一条命令。已安装的其他支持版本可替换 `-3.13`。安装后也可运行 `.\.venv\Scripts\minimal-agent.exe`。Linux/macOS 使用 `python3 -m venv .venv`、`.venv/bin/python -m pip install -e '.[dev]'`，在环境中配置同名变量后运行 `.venv/bin/python -m minimal_agent`。
 
-程序启动时自动加载当前工作目录的 `.env`（支持 UTF-8 BOM），不向父目录搜索文件；已有环境变量优先，包括显式空值。不展开配置中的变量引用。请从项目根目录启动。API key 只填写到本地 `.env`，不写入命令历史、README 或提交材料。`.gitignore` 忽略真实密钥配置文件、虚拟环境、数据库及日志，只有无密钥的 `.env.example` 入库；程序自身不创建日志或数据库。
+程序启动时自动加载当前工作目录的 `.env`（支持 UTF-8 BOM），不向父目录搜索文件；已有环境变量优先，包括显式空值。不展开配置中的变量引用。请从项目根目录启动。API key 只填写到本地 `.env`，不写入命令历史、README 或提交材料。`.gitignore` 忽略真实密钥配置文件、虚拟环境、数据库及日志，只有无密钥的 `.env.example` 入库；程序创建 SQLite 数据库和相邻的 `.locks` 目录，不创建日志文件。
 
 | 环境变量 | 含义 |
 | --- | --- |
@@ -40,16 +40,16 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 ## 使用与错误行为
 
-启动后依次输入 `我叫小林`、`我叫什么`，模型应利用本进程的历史回答姓名。回答文本由模型生成，不保证逐字一致。
+启动后依次输入 `我叫小林`、`我叫什么`，模型应利用当前 session 的历史回答姓名。回答文本由模型生成，不保证逐字一致。
 
 - 空输入或纯空白：跳过，不请求模型。
-- `/exit`、`/quit`（不区分大小写）、EOF 或 Ctrl+C：结束进程，历史随之消失。Windows EOF 为 Ctrl+Z 后回车，Linux/macOS 为 Ctrl+D。
+- `/exit`、`/quit`（不区分大小写）、EOF 或 Ctrl+C：结束进程，释放会话占用；已成功保存的历史保留。Windows EOF 为 Ctrl+Z 后回车，Linux/macOS 为 Ctrl+D。
 - 配置缺失或无效：向 stderr 输出清楚提示，退出码 2，不请求模型。
 - 鉴权失败、权限不足、限流、服务错误、连接失败或超时：向 stderr 输出安全提示，不输出服务端原始异常、密钥或堆栈，可继续输入。
 - 请求失败或返回不完整/空白/畸形协议内容：不把它显示为成功回答，不将该轮问答写入历史，之前成功历史保留。需要重新输入失败的问题。
 - 正常结束退出码 0；即使期间某轮失败，随后正常退出仍为 0。脚本验收真实请求成功应使用下面的显式真实 API 测试。
 
-请求没有自动重试；HTTP 客户端不读取系统代理环境变量。当前历史随成功轮次增长，每 turn 最多 8 次主模型调用；尚未做持久化、压缩或跨 turn 总调用预算，这些属于后续 Issue。
+请求没有自动重试；HTTP 客户端不读取系统代理环境变量。当前历史随成功轮次增长，每 turn 最多 8 次主模型调用；已做 SQLite 持久化，尚未做压缩或跨 turn 总调用预算。
 
 ## 一次请求如何工作
 
@@ -64,7 +64,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ]
 ```
 
-这是协议说明示例，不是真实 API 运行记录。服务端模型不会自动记住客户端未发送的历史；追问能回答，是因为 CLI 每次重新发送之前的成功问答。历史仅在当前进程的列表中；重新启动没有之前的内容，同一用户的不同进程也不会共享历史。持久化和独立 session 由后续 Issue 提供。
+这是协议说明示例，不是真实 API 运行记录。服务端模型不会自动记住客户端未发送的历史；追问能回答，是因为 CLI 每次重新发送之前的成功问答。保存历史与发送 context 是两件事：SQLite 负责跨进程保留完整的成功 turn；Runtime 每次 turn 都按应用提供的 user_id/session_id 读取有序历史，把 system 指令放最前，再追加当前输入并重新发送给模型。保存但不发送的内容，模型无法用于追问。本步发送当前 session 的全部成功历史，后续再引入压缩。
 
 代码阅读顺序：
 
@@ -74,6 +74,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 4. `src/minimal_agent/runtime.py` 区分外层 turn 与内层 step，回填工具结果并判断继续或停止；只有完成的 turn 才进入历史。
 5. `src/minimal_agent/tools.py` 注册工具，启动时检查 JSON Schema，执行前解析 JSON 并校验参数，调用真实 Python 四则运算函数。
+6. `src/minimal_agent/sessions.py` 负责会话占用和 SQLite 有序消息读写。
 
 ## 测试与验收
 
@@ -94,13 +95,13 @@ git diff --check
 ```powershell
 $env:RUN_LIVE_API = '1'
 try {
-    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live.py -q -s -k "not calculator" --tb=short
+    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live.py -q -s -k "not calculator and not sessions_resume" --tb=short
 } finally {
     Remove-Item Env:RUN_LIVE_API -ErrorAction SilentlyContinue
 }
 ```
 
-真实测试验证客户端与 CLI 追问能返回“小林”，只打印时间、模型和匹配结果，不打印 key 或原始响应。Function Calling 测试向真实服务发送 `echo_name` Schema 并强制选择该函数，检查返回的调用 ID、函数名及 JSON 参数，不执行工具，也不实现下一步 Runtime。实测 Qwen 强制工具调用可能返回 `finish_reason=stop`，因此按实际 `tool_calls` 校验，不能只靠结束标记判断有无工具调用。未显式开启时所有真实测试跳过（当前共四个），开启后配置错误或请求失败会失败，绝不切换到替身。
+真实测试验证客户端与 CLI 追问能返回“小林”，只打印时间、模型和匹配结果，不打印 key 或原始响应。Function Calling 测试向真实服务发送 `echo_name` Schema 并强制选择该函数，检查返回的调用 ID、函数名及 JSON 参数，不执行工具，也不实现下一步 Runtime。实测 Qwen 强制工具调用可能返回 `finish_reason=stop`，因此按实际 `tool_calls` 校验，不能只靠结束标记判断有无工具调用。未显式开启时所有真实测试跳过（当前共五个），开启后配置错误或请求失败会失败，绝不切换到替身。
 
 ### Issue #2 验收证据（2026-09-07）
 
@@ -197,3 +198,59 @@ try {
 本步全量离线验证：73 passed, 4 skipped（32.72 秒，4 个真实 API 测试默认跳过）；本步真实 calculator 测试已单独运行通过。mypy 检查 7 个源文件通过，Ruff 静态与格式检查、git diff --check 通过。
 
 本步双轴审查：基于 `git diff 5d353ca...74702c7`，Standards 0 项发现；Spec 发现 1 项旧 README 真实测试命令范围与请求数说明不一致，已将旧命令限定为原来的三项测试，并将当前默认跳过数更新为四个。未发现代码功能缺口。
+
+
+## Issue #4：独立 session、SQLite 与重启
+
+两个 PowerShell 终端在同一项目目录启动，使用同一数据库、不同 session：
+
+```powershell
+.\start.bat --user-id demo --session-id 1
+.\start.bat --user-id demo --session-id 2
+```
+
+也可直接运行 `.\.venv\Scripts\python.exe -X utf8 -m minimal_agent --user-id demo --session-id 1`。CLI 显示当前标识；不传参数时为 `local/default`，数据库默认是当前目录 `agent.sqlite3`。`--db <路径>` 可指定已有父目录中的数据库；相对路径基于工作目录，恢复时必须指向同一文件。`--db :memory:` 仅保留本进程历史，供临时演示。Runtime 默认也是内存 SQLite；持久调用使用 `with Runtime(client, db_path=path, user_id="demo", session_id="1") as runtime:`，或显式 `close()` 释放占用。
+
+在终端 1 输入“我叫小林，请计算 12+8”，终端 2 输入“我叫小王，请计算 30+8”。分别退出后按原标识重启，追问“我叫什么？上次结果再除以2”。两个 session 应分别得到小林/10、小王/19；同名 session 配上另一个 user_id 也属于新会话。
+
+`user_id` 是应用传入的本地命名空间，**不是用户认证**。知道别人的标识并能访问数据库的人可以打开其会话；数据库以明文保存对话。模型参数不能指定或覆盖保存身份；calculator 的 Schema 拒绝额外 user_id/session_id 字段。
+
+同一 session 从打开到关闭只有一个运行者：Windows 使用操作系统字节范围锁，Unix 使用 flock；第二个运行者立即提示占用并退出，其他 session 可以交替聊天。锁文件位于数据库相邻 `.locks` 目录，文件保留不代表仍被占用；正常退出、Ctrl+C、进程被强制结束后操作系统释放锁，无需手工删除。运行期间不要删除锁文件或通过硬链接别名打开同一数据库；本方案用于本机文件系统，不用于共享网络盘或分布式部署。
+
+成功 turn 的 user、assistant（含完整 tool_calls/arguments）、tool（含 tool_call_id/result）按顺序在一个 SQLite 事务中追加。存储失败不会显示成功答案；模型失败或进程在 turn 完成前退出，该 turn 不保存，已完成历史仍可恢复。当前 calculator 没有外部副作用；本步不实现中断 turn 的续跑或后续 todo 的副作用恢复。不同 session 写入仅在短提交事务内串行，数据库忙超过 5 秒会明确报错，不静默覆盖历史。
+
+### 本步验收对应证据
+
+| 验收项 | 验证 |
+| --- | --- |
+| CLI 接收并显示标识、创建/恢复 | `test_cli_displays_identity_and_restores_session` |
+| 有序持久消息、每 turn 历史、两个身份维度隔离 | `test_runtime_restores_ordered_history_and_isolates_sessions` |
+| 完整调用/结果和计算追问 | `test_restart_preserves_complete_tool_pairs_and_rejects_model_identity` |
+| 身份不能由模型覆盖 | 同上：伪造参数被拒绝，目标会话仍为空 |
+| 两终端交替聊天、冲突、正常退出及异常退出后恢复 | `test_two_cli_processes_alternate_conflict_and_recover`，真实 CLI 子进程、真实临时 SQLite |
+| 失败 turn 不损害旧历史 | `test_failed_tool_turn_does_not_damage_durable_history` |
+| 原理和认证范围说明 | 本节和“一次请求如何工作” |
+
+以上离线模型全部是回环 HTTP 脚本化响应，Runtime、calculator、SQLite 和 CLI 进程均为真实实现；没有直接查表代替行为断言。真实模型的重启追问另由 `test_real_cli_sessions_resume` 显式验证：
+
+```powershell
+$env:RUN_LIVE_API = '1'
+try {
+    & .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_live.py -q -s -k sessions_resume --tb=short
+} finally {
+    Remove-Item Env:RUN_LIVE_API -ErrorAction SilentlyContinue
+}
+```
+
+### 本步实际 Prompt 与开发记录
+
+- 用户实际输入：`[$implement](C:\Users\1\.agents\skills\implement\SKILL.md) #4`。读取 Issue #4、父 Issue #1，确认阻塞 #3 已关闭。
+- 独立分支 `codex/session-persistence`，开始基点 `89b5a74aa63cf20123787a0edf4c3a8a853ad3c7`；原有未跟踪 CONTEXT.md 保持原样、不纳入提交。
+- 公共测试边界直接采用 Issue 指定的 Runtime/CLI。先以不支持 db_path 的失败用例实现隔离/重启，再以同 session 未拒绝的失败用例实现进程锁，随后以 CLI 未显示身份的失败用例接入参数和持久存储。
+- Windows mypy 最初无法识别 Unix fcntl 分支；改用静态可识别的 sys.platform 判断。Ruff 检出导入顺序和长行，已调整。没有新增外部依赖。
+
+- 真实测试首跑错误地要求首轮回答复述姓名；模型只回答计算结果，该断言失败。改为只在明确询问姓名的重启追问轮检查姓名，保留计算结果及真实工具事件检查。
+
+2026-09-07 09:44:03 UTC，真实 qwen-plus 重启验收：`1 passed, 4 deselected`（13.76 秒）。四个 CLI 进程依次打开/恢复两个 session，session 1 保留小林和 20，追问得到 10；session 2 保留小王和 38，追问得到 19。每轮都观察到真实 calculator 结果。双进程同时存活、冲突和强制结束由离线子进程测试覆盖。
+
+本步全量离线验证：`83 passed, 5 skipped`（43.92 秒，5 个真实 API 测试默认跳过；本步真实重启测试已单独通过）。mypy 检查 8 个源文件通过，Ruff 静态与格式检查通过。

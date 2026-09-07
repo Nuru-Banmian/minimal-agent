@@ -1,13 +1,17 @@
 import json
+import sqlite3
 from collections.abc import Callable
+from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 from minimal_agent.client import Message, ModelClient, ModelError
+from minimal_agent.sessions import SessionError, SessionStore
 from minimal_agent.tools import ToolRegistry, calculator_registry
 
 
 class Runtime:
-    """Own bounded inner loops and commit only complete turns to in-process history."""
+    """Own bounded inner loops and atomically persist complete turns per session."""
 
     def __init__(
         self,
@@ -16,6 +20,9 @@ class Runtime:
         registry: ToolRegistry | None = None,
         max_steps: int = 8,
         trace: Callable[[dict[str, Any]], None] | None = None,
+        db_path: str | Path = ":memory:",
+        user_id: str = "local",
+        session_id: str = "default",
     ) -> None:
         if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
             raise ValueError("max_steps 必须是正整数")
@@ -24,7 +31,7 @@ class Runtime:
         self.max_steps = max_steps
         self.trace = trace
         self.turn = 0
-        self.history: list[Message] = [
+        self._system: list[Message] = [
             {
                 "role": "system",
                 "content": (
@@ -37,14 +44,39 @@ class Runtime:
                 ),
             }
         ]
+        try:
+            self._store = SessionStore(db_path, user_id, session_id)
+        except (OSError, sqlite3.Error) as error:
+            raise SessionError("无法打开会话数据库，请检查路径和权限。") from error
+
+    def __enter__(self) -> "Runtime":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._store.close()
 
     def _emit(self, step: int, event: str, **fields: Any) -> None:
         if self.trace is not None:
             self.trace({"turn": self.turn, "step": step, "event": event, **fields})
 
     def run(self, text: str) -> str:
+        try:
+            return self._run(text)
+        except sqlite3.Error as error:
+            raise SessionError("会话读写失败，本轮未保存，请检查数据库后重试。") from error
+
+    def _run(self, text: str) -> str:
         self.turn += 1
-        messages: list[Message] = [*self.history, {"role": "user", "content": text}]
+        history = [*self._system, *self._store.read()]
+        messages: list[Message] = [*history, {"role": "user", "content": text}]
         for step in range(1, self.max_steps + 1):
             self._emit(step, "model_request")
             try:
@@ -56,7 +88,7 @@ class Runtime:
             calls = answer.get("tool_calls", [])
             if not calls:
                 assert isinstance(answer["content"], str)
-                self.history = messages
+                self._store.append(messages[len(history) :])
                 self._emit(step, "stop", reason="final_answer")
                 return answer["content"]
             if answer["content"]:

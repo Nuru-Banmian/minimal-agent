@@ -59,7 +59,7 @@ def test_real_api_remembers_name():
 
 def test_real_cli_remembers_name():
     result = subprocess.run(
-        [sys.executable, "-X", "utf8", "-m", "minimal_agent"],
+        [sys.executable, "-X", "utf8", "-m", "minimal_agent", "--db", ":memory:"],
         input="我叫小林\n我叫什么？只回答我的名字。\n/exit\n",
         capture_output=True,
         text=True,
@@ -72,6 +72,48 @@ def test_real_cli_remembers_name():
     assert len(answers) == 2, "真实 CLI 未返回两轮回答"
     assert "小林" in answers[1], "真实 CLI 追问未正确返回名字"
     print("真实 CLI: 两轮回答成功，追问名字匹配，正常退出")
+
+
+def test_real_cli_sessions_resume(tmp_path):
+    settings = Settings.from_env()
+    assert settings.base_url.startswith("https://")
+    database = tmp_path / "live.sqlite3"
+    for session, name, a, expected in [("1", "小林", 12, 20), ("2", "小王", 30, 38)]:
+        command = [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "minimal_agent",
+            "--db",
+            str(database),
+            "--user-id",
+            "live",
+            "--session-id",
+            session,
+        ]
+        for prompt, result_number in [
+            (f"我叫{name}，请记住我的名字，并用计算器计算 {a}+8。", expected),
+            ("我叫什么？把上次计算的结果再除以2，回答名字和结果。", expected // 2),
+        ]:
+            result = subprocess.run(
+                command,
+                input=prompt + "\n/exit\n",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=120,
+            )
+            assert result.returncode == 0 and not result.stderr, "真实 CLI 失败（省略原始输出）"
+            answer = result.stdout.split("助手：")[-1]
+            assert str(result_number) in answer, "真实计算未匹配结果"
+            if result_number != expected:
+                assert name in answer, "真实重启追问未匹配名字"
+            assert f'"result": {result_number}' in result.stdout, "未观察到真实计算结果"
+    print(
+        f"真实 CLI session 重启: {datetime.now(UTC).isoformat()} model={settings.model}; "
+        "session 1 小林 20→10；session 2 小王 38→19；四个进程均正常退出"
+    )
 
 
 def test_real_api_supports_function_calling():

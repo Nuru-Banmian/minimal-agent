@@ -1,11 +1,14 @@
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
+from queue import Queue
+from threading import Thread
 
 import pytest
 
 
-def run_cli(model_server, text, overrides=None, cwd=None):
+def run_cli(model_server, text, overrides=None, cwd=None, args=()):
     env = os.environ.copy()
     env.update(
         {
@@ -22,7 +25,7 @@ def run_cli(model_server, text, overrides=None, cwd=None):
         else:
             env[name] = value
     return subprocess.run(
-        [sys.executable, "-m", "minimal_agent"],
+        [sys.executable, "-m", "minimal_agent", "--db", ":memory:", *args],
         input=text,
         capture_output=True,
         text=True,
@@ -182,3 +185,135 @@ def test_cli_calculator_loop_and_trace(model_server):
     assert '"tool_call_id": "cli-call"' in result.stdout
     assert '"result": 20' in result.stdout
     assert '"reason": "final_answer"' in result.stdout
+
+
+def test_cli_displays_identity_and_restores_session(model_server, tmp_path):
+    args = ["--db", str(tmp_path / "chat.sqlite3"), "--user-id", "小林", "--session-id", "1"]
+    model_server.answer("记住了")
+    first = run_cli(model_server, "我的颜色是蓝色\n/exit\n", args=args)
+    assert first.returncode == 0
+    assert "user_id=小林" in first.stdout and "session_id=1" in first.stdout
+    model_server.answer("蓝色")
+    second = run_cli(model_server, "我的颜色？\n/exit\n", args=args)
+    assert second.returncode == 0
+    assert "助手：蓝色" in second.stdout
+    model_server.requests.get_nowait()
+    assert model_server.requests.get_nowait()["body"]["messages"][1:] == [
+        {"role": "user", "content": "我的颜色是蓝色"},
+        {"role": "assistant", "content": "记住了"},
+        {"role": "user", "content": "我的颜色？"},
+    ]
+
+
+@contextmanager
+def interactive_cli(model_server, database, session):
+    env = os.environ.copy()
+    env.update(DASHSCOPE_API_KEY="test-key", LLM_MODEL="qwen-plus", LLM_BASE_URL=model_server.url)
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-X",
+            "utf8",
+            "-m",
+            "minimal_agent",
+            "--db",
+            str(database),
+            "--user-id",
+            "u",
+            "--session-id",
+            session,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+    lines = Queue()
+    reader = Thread(target=lambda: [lines.put(line) for line in process.stdout], daemon=True)
+    reader.start()
+
+    def wait_for(fragment):
+        while fragment not in lines.get(timeout=10):
+            pass
+
+    def send(text):
+        process.stdin.write(text + "\n")
+        process.stdin.flush()
+
+    try:
+        wait_for("当前会话")
+        yield process, send, wait_for
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        reader.join(timeout=5)
+        process.stdin.close()
+        process.stdout.close()
+        process.stderr.close()
+
+
+@pytest.mark.parametrize("kill_owner", [False, True])
+def test_two_cli_processes_alternate_conflict_and_recover(model_server, tmp_path, kill_owner):
+    database = tmp_path / "chat.sqlite3"
+    with interactive_cli(model_server, database, "1") as (first, send1, wait1):
+        with interactive_cli(model_server, database, "2") as (_, send2, wait2):
+            for send, wait, fact in [(send1, wait1, "小林"), (send2, wait2, "小王")]:
+                model_server.answer(f"你好，{fact}")
+                send(f"我叫{fact}")
+                wait(f"助手：你好，{fact}")
+                assert model_server.requests.get(timeout=5)["body"]["messages"][1:] == [
+                    {"role": "user", "content": f"我叫{fact}"}
+                ]
+            conflict = run_cli(
+                model_server,
+                "不应发送\n",
+                args=["--db", str(database), "--user-id", "u", "--session-id", "1"],
+            )
+            assert conflict.returncode == 2
+            assert "占用" in conflict.stderr and "Traceback" not in conflict.stderr
+            assert model_server.requests.empty()
+            model_server.answer("小林")
+            send1("我叫什么")
+            wait1("助手：小林")
+            history = model_server.requests.get(timeout=5)["body"]["messages"]
+            assert history[1:] == [
+                {"role": "user", "content": "我叫小林"},
+                {"role": "assistant", "content": "你好，小林"},
+                {"role": "user", "content": "我叫什么"},
+            ]
+            if kill_owner:
+                first.kill()
+            else:
+                send1("/exit")
+            first.wait(timeout=5)
+            model_server.answer("小林")
+            restored = run_cli(
+                model_server,
+                "再说一次\n/exit\n",
+                args=["--db", str(database), "--user-id", "u", "--session-id", "1"],
+            )
+            assert restored.returncode == 0 and not restored.stderr
+            assert model_server.requests.get(timeout=5)["body"]["messages"] == [
+                *history,
+                {"role": "assistant", "content": "小林"},
+                {"role": "user", "content": "再说一次"},
+            ]
+            send2("/exit")
+            wait2("再见")
+
+
+@pytest.mark.parametrize("args", [["--user-id", " "], ["--session-id", ""]])
+def test_cli_rejects_empty_identity(model_server, args):
+    result = run_cli(model_server, "", args=args)
+    assert result.returncode == 2
+    assert "不能为空" in result.stderr and "Traceback" not in result.stderr
+
+
+def test_cli_database_open_failure_is_clear(model_server, tmp_path):
+    result = run_cli(model_server, "", args=["--db", str(tmp_path / "missing" / "chat.sqlite3")])
+    assert result.returncode == 2
+    assert "无法打开" in result.stderr and "Traceback" not in result.stderr

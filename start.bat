@@ -18,7 +18,7 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-".venv\Scripts\python.exe" -X utf8 -m minimal_agent
+".venv\Scripts\python.exe" -X utf8 -m minimal_agent %*
 set "app_exit=%errorlevel%"
 if not "%app_exit%"=="0" pause
 popd
