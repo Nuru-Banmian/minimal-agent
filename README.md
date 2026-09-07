@@ -373,8 +373,10 @@ try {
 }
 ```
 
-本轮检查到本地尚未配置 TAVILY_API_KEY，所以真实联网验收未执行，不记为通过。实际开发先以缺少 TavilySearch 的失败测试接入搜索，再以 HTTP 401 导致 Runtime 抛异常的失败用例补齐安全工具错误，最后以 CLI 不支持模式参数的失败用例接入配置。沿用现有 httpx，无新增依赖。
+实现时本地尚未配置 TAVILY_API_KEY，因此当时未执行真实联网验收；用户配置后的验证见下文。实际开发先以缺少 TavilySearch 的失败测试接入搜索，再以 HTTP 401 导致 Runtime 抛异常的失败用例补齐安全工具错误，最后以 CLI 不支持模式参数的失败用例接入配置。沿用现有 httpx，无新增依赖。
 
 本次全量离线验证：`113 passed, 7 skipped`（58.67 秒；包括新增真实联网测试在内的 7 个真实 API 测试默认跳过）。mypy、Ruff 静态与格式检查、`git diff --check` 通过。旧 CLI 演示测试显式指定 mock，避免本地切换 Tavily 配置后改变原有验收的含义。
 
-联网增量实现提交 `d14188b`，双轴只读审阅基于 `978ed5f...d14188b`（重点 `2289524...d14188b`）：Standards 0 项、Spec 0 项；真实 Tavily 尚未验证的限制保留。CLI 测试隔离调整后，双进程用例复验 `2 passed, 28 deselected`（6.22 秒）。
+联网增量实现提交 `d14188b`，双轴只读审阅基于 `978ed5f...d14188b`（重点 `2289524...d14188b`）：Standards 0 项、Spec 0 项；审阅时尚未验证真实 Tavily。CLI 测试隔离调整后，双进程用例复验 `2 passed, 28 deselected`（6.22 秒）。
+
+用户确认密钥“添加完毕”后，于 2026-09-07 11:49 UTC 显式运行上述 `tests/test_live_search.py`：**1 passed in 9.98s**。实际使用真实 CLI、qwen-plus 和 Tavily API，没有替换搜索响应；请求“搜索 Python 官方文档并添加一个阅读文档的待办，回答附来源链接。”验证了搜索有结果、`mock=false`、最终答案引用返回的来源链接，以及 todo 返回 added。测试使用内存数据库，没有向用户已有 session 添加测试待办。输出仅记录验证摘要，不包含密钥。
