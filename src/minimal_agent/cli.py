@@ -5,6 +5,7 @@ import sys
 
 from minimal_agent.client import ModelClient, ModelError
 from minimal_agent.config import ConfigError, Settings
+from minimal_agent.memory import MemorySettings
 from minimal_agent.runtime import Runtime
 from minimal_agent.search import TavilySearch, search
 from minimal_agent.sessions import SessionError
@@ -25,6 +26,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         settings = Settings.from_env()
+        memory = MemorySettings.from_env()
         provider = args.search_provider or os.environ.get("SEARCH_PROVIDER", "mock").strip()
         if provider not in {"mock", "tavily"}:
             raise ConfigError("SEARCH_PROVIDER 只能是 mock 或 tavily。")
@@ -45,6 +47,7 @@ def main() -> int:
                 user_id=args.user_id,
                 session_id=args.session_id,
                 search_tool=search_tool,
+                memory=memory,
                 trace=lambda event: print("trace: " + json.dumps(event, ensure_ascii=False)),
             ) as runtime,
         ):

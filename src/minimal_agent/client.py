@@ -45,7 +45,14 @@ class ModelClient:
             raise ModelError("模型未返回有效的完整文本回答。")
         return message["content"]
 
-    def decide(self, messages: list[Message], tools: list[dict[str, Any]] | None = None) -> Message:
+    def decide(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> Message:
         payload: dict[str, Any] = {
             "model": self.settings.model,
             "messages": messages,
@@ -54,10 +61,15 @@ class ModelClient:
         }
         if tools:
             payload["tools"] = tools
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         try:
             response = self.http.post(
                 f"{self.settings.base_url.rstrip('/')}/chat/completions",
                 json=payload,
+                timeout=self.settings.timeout_seconds
+                if timeout_seconds is None
+                else timeout_seconds,
             )
         except httpx.TimeoutException:
             raise ModelError("模型请求超时，请稍后重试或调整 LLM_TIMEOUT_SECONDS。") from None

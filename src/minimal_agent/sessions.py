@@ -66,6 +66,12 @@ class SessionStore:
                     "id TEXT PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL, "
                     "content TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0)"
                 )
+                self.connection.execute(
+                    "CREATE TABLE IF NOT EXISTS memories ("
+                    "user_id TEXT NOT NULL, session_id TEXT NOT NULL, "
+                    "summary TEXT NOT NULL, covered INTEGER NOT NULL, "
+                    "PRIMARY KEY (user_id, session_id))"
+                )
         except BaseException:
             self.close()
             raise
@@ -93,6 +99,28 @@ class SessionStore:
                     (*self.identity, last + offset, json.dumps(message, ensure_ascii=False))
                     for offset, message in enumerate(messages, 1)
                 ],
+            )
+
+    def recall(self) -> tuple[str, int, list[Message]]:
+        row = self.connection.execute(
+            "SELECT summary, covered FROM memories WHERE user_id = ? AND session_id = ?",
+            self.identity,
+        ).fetchone()
+        summary, covered = row if row else ("", 0)
+        rows = self.connection.execute(
+            "SELECT payload FROM messages WHERE user_id = ? AND session_id = ? "
+            "AND sequence > ? ORDER BY sequence",
+            (*self.identity, covered),
+        )
+        return summary, covered, [json.loads(row[0]) for row in rows]
+
+    def remember(self, summary: str, covered: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO memories VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(user_id, session_id) DO UPDATE SET "
+                "summary = excluded.summary, covered = excluded.covered",
+                (*self.identity, summary, covered),
             )
 
     def close(self) -> None:
