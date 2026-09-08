@@ -92,7 +92,7 @@ CLI 同时输出控制台 trace 和本地 `logs/trace.jsonl`，可用 `--trace-f
 | 信息 | 存储 | 召回时机 | 放入 context 的位置与取舍 |
 | --- | --- | --- | --- |
 | 应用指令 | Runtime 代码 | 每次请求 | 最前面的 system；不从摘要生成 |
-| 完整成功历史 | SQLite `messages` | 每 turn 读取摘要边界之后的消息 | 保留近期完整 turn；已覆盖原文不再发送，但仍存数据库 |
+| 完整历史（含已修复的中断轮） | SQLite `messages` | 每 turn 读取摘要边界之后的消息 | 保留近期完整 turn；已覆盖原文不再发送，但仍存数据库 |
 | 旧对话摘要 | SQLite `memories`，含 covered 序号 | 每 turn，按 user/session 读取 | system 后的 **user 历史资料消息**；不授予 system 权限 |
 | 结构化待办 | SQLite `todos` | 模型调用 todo 时 | 作为 tool 结果返回；不自动读取所有 session 或整库待办 |
 | 当前 turn | 运行内存，成功后保存 | 当前工具循环持续使用 | 始终保留，不能被摘要；调用与结果成对 |
@@ -215,11 +215,11 @@ TDD 先观察缺少 memory 模块的失败，再实现压缩/重启；工具原�
 | API 分类、超时、禁用重试、失败后可继续 | `test_api_failure_trace_counts_attempt_and_next_turn`、`test_transport_failures_are_counted_without_retry_and_next_turn_works`；既有 CLI 超时/鉴权测试 |
 | 畸形 JSON、Schema、未知工具、工具/数据库异常和部分成功 | `test_argument_errors_are_distinguished_and_correctable`、`test_tool_failure_keeps_success_and_can_continue`、既有 Runtime 多工具测试 |
 | 纠错受上限约束、下一轮可继续 | `test_cli_step_limit_trace_and_followup`、既有默认 8 步测试 |
-| 同次写重放幂等、新请求仍能写入 | `test_replayed_todo_is_once_per_turn_but_new_request_can_add` |
+| 同次写重放幂等、重启后新请求仍能写入、ID 改参拒绝 | `test_replayed_todo_is_once_per_turn_but_new_request_can_add`、`test_reused_write_id_cannot_change_arguments` |
 | 事务结果与恢复，不盲目重放 | `test_database_fault_never_duplicates_or_loses_committed_todo`、`test_restart_repairs_interrupted_calls_without_replaying_writes` |
 | JSONL、身份/调用/耗时/状态/停止原因、空行动说明 | `test_cli_jsonl_trace_is_bounded_redacted_and_complete` |
 | 摘要实际请求计数与压缩大小 | `test_summary_trace_counts_actual_requests_and_compression` |
-| 有界参数/结果、脱敏 | JSONL 测试、既有大工具结果测试；日志与模型 context 采用独立限额 |
+| 有界参数/结果、脱敏 | JSONL 测试、`test_large_result_log_redacts_authentication_and_bounds_preview`、搜索大结果测试；日志与模型 context 采用独立限额 |
 | 离线失败恢复与上限演示 | `examples/offline_recovery.py`，运行证据见下 |
 
 离线演示不需要外部 API，使用真实 CLI、临时 SQLite、回环 HTTP 脚本化模型及未知工具错误：
@@ -229,3 +229,9 @@ TDD 先观察缺少 memory 模块的失败，再实现压缩/重启；工具原�
 ```
 
 输入依次为“故障注入”“继续”“达到上限”。脚本自动验证 stop 请求数为 1、1、2，并打印可解释原因的 trace。运行记录：[issue-7-offline.txt](docs/evidence/issue-7-offline.txt)。本期未运行真实 Qwen/Tavily API；不得把离线结果或 #6 的真实运行记录当成本期真实 API 验收。Issue #7 保持打开等待用户审阅，不自动进入下一步。
+
+首次全量结果为 2 failed、154 passed、8 skipped（76.74s）：空响应新文案不满足既有完整回答提示断言；搜索测试原来直接从 trace 读取完整大结果。已保留兼容文案，并将搜索数据验收移到实际发给模型的 HTTP 消息，同时验证 trace 截断。规格审阅还复现 Basic 认证头仅遮住方案名、未遮凭据的问题，增加 Runtime 公共日志回归后修复；后续专项测试为 **20 passed in 9.62s**。证据文件统一为 UTF-8/LF，避免 PowerShell 输出的 CRLF 被 diff 检查标为尾随空白。
+
+最终验证（2026-09-08）：**158 passed, 8 skipped in 76.13s**；显式关闭 RUN_LIVE_API/RUN_LIVE_SEARCH 后执行全量，8 项真实测试按设计跳过。mypy 检查 11 个源文件通过；Ruff 检查通过，32 个 Python 文件格式检查通过，`git diff --check` 通过。离线演示退出码 0。
+
+双轴审阅使用 `git diff 04770a454bfa06eb5ec56df3bf0c8abb549b6313...bf2972666e54b6e54b09df3774443360c98c9bbb`。Standards：0 项规范违反或需修改的代码异味。Spec：首次发现 1 项 Basic 脱敏缺陷，修复后的独立复核为 0 项未解决；复核另运行 3 项聚焦测试通过（17 deselected，1.75s）。模型请求计数口径已在本 README 说明。审阅后只补充本文验收记录，未继续下一 Issue，未推送或合并。
