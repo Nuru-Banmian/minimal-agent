@@ -191,3 +191,7 @@ TDD 先观察缺少 memory 模块的失败，再实现压缩/重启；工具原�
 Issue #6 保持打开等待审阅；不自动进入下一 Issue，不推送或合并 main。
 
 真实验收：2026-09-08 10:43:10 UTC 开始，qwen-plus，1 passed in 21.78s。首次运行 1 failed in 14.53s，失败点和修复见上，未记为通过。
+
+本次全量离线结果：**138 passed, 8 skipped in 67.80s**；8 项需显式开启的真实测试默认跳过，本步真实 memory 演示已单独通过。mypy 检查 10 个源文件通过，Ruff 检查及全部 29 个 Python 文件格式检查通过，`git diff --check` 通过。
+
+双轴只读审阅范围：`git diff 240eaa1f3b0606a48a92d4b958998f3fea2efe8d...6dfbed2`。Standards：0 项规范违反或需修改的代码异味；Spec：0 项缺失、范围外或错误实现。两个子代理分别核对规范与 Issue #6/#1，审阅后仅补充本段验证记录。
