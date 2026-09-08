@@ -16,6 +16,11 @@ def safe_event(event: dict[str, Any], secrets: tuple[str, ...]) -> dict[str, Any
             if secret:
                 text = text.replace(secret, "[REDACTED]")
         text = re.sub(r"(?i)bearer\s+[^\s\"',}]+", "Bearer [REDACTED]", text)
+        text = re.sub(
+            r"(?i)(authorization\s*[\"']?\s*[:=]\s*[\"']?)[^\r\n\"',}]+",
+            r"\1[REDACTED]",
+            text,
+        )
         return re.sub(
             r"(?i)(bearer\s+|(?:api[_-]?key|authorization)\s*[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+",
             r"\1[REDACTED]",

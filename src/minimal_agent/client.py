@@ -103,10 +103,14 @@ class ModelClient:
             raise ModelError(hint, code)
         try:
             if not response.content.strip():
-                raise ModelError("模型协议错误：响应为空。", "empty_response")
+                raise ModelError(
+                    "模型协议错误：响应为空，未返回有效的完整文本回答。", "empty_response"
+                )
             choices = response.json()["choices"]
             if choices == []:
-                raise ModelError("模型协议错误：响应为空。", "empty_response")
+                raise ModelError(
+                    "模型协议错误：响应为空，未返回有效的完整文本回答。", "empty_response"
+                )
             choice = choices[0]
             message = choice["message"]
             content = message.get("content")

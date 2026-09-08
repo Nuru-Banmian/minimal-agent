@@ -48,6 +48,7 @@ def test_replayed_todo_is_once_per_turn_but_new_request_can_add(model_server, tm
     with ModelClient(Settings("qwen-plus", model_server.url, "test-key")) as client:
         with Runtime(client, db_path=tmp_path / "replay.sqlite3") as runtime:
             runtime.run("添加报告")
+        with Runtime(client, db_path=tmp_path / "replay.sqlite3") as runtime:
             runtime.run("再添加报告")
             runtime.run("查看")
     requests = [model_server.requests.get_nowait()["body"] for _ in range(7)]
@@ -126,7 +127,7 @@ def test_cli_jsonl_trace_is_bounded_redacted_and_complete(model_server, tmp_path
                 name="search",
                 arguments=json.dumps(
                     {
-                        "query": "test-key Authorization: Bearer hidden-token " + "汉" * 2000,
+                        "query": "test-key " + "汉" * 2000 + "\nAuthorization: Bearer hidden-token",
                     }
                 ),
             )
@@ -310,3 +311,39 @@ def test_todo_reads_stay_fresh_when_model_reuses_read_id(model_server):
     requests = [model_server.requests.get_nowait()["body"]["messages"] for _ in range(4)]
     assert json.loads(requests[1][-1]["content"])["result"]["items"] == []
     assert len(json.loads(requests[-1][-1]["content"])["result"]["items"]) == 1
+
+
+def test_large_result_log_redacts_authentication_and_bounds_preview(model_server):
+    events = []
+    reply(model_server, [call(name="search", arguments='{"query":"x"}')])
+    model_server.answer("结束")
+    with ModelClient(Settings("qwen-plus", model_server.url, "test-key")) as client:
+        with Runtime(
+            client,
+            trace=events.append,
+            search_tool=lambda query: {
+                "content": "Authorization: Basic dXNlcjpwYXNz\n" + "x" * 5000,
+                "api_key": "unknown-key",
+                "header": {"Authorization": "custom-credentials"},
+            },
+        ) as runtime:
+            runtime.run("查询")
+    raw = json.dumps(events)
+    assert "dXNlcjpwYXNz" not in raw
+    assert "unknown-key" not in raw and "custom-credentials" not in raw
+    tool = next(e for e in events if e["event"] == "tool")
+    assert tool["result"]["truncated"] is True
+
+
+def test_reused_write_id_cannot_change_arguments(model_server):
+    reply(model_server, [call("same", name="todo", arguments='{"action":"add","content":"报告"}')])
+    reply(model_server, [call("same", name="todo", arguments='{"action":"add","content":"额外"}')])
+    reply(model_server, [call("read", name="todo", arguments='{"action":"list"}')])
+    model_server.answer("只有报告")
+    events = []
+    with ModelClient(Settings("qwen-plus", model_server.url, "test-key")) as client:
+        with Runtime(client, trace=events.append) as runtime:
+            runtime.run("添加一次")
+    tools = [e for e in events if e["event"] == "tool"]
+    assert tools[1]["error"] == "call_id_conflict"
+    assert [i["content"] for i in tools[2]["result"]["items"]] == ["报告"]
