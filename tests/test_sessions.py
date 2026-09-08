@@ -109,8 +109,12 @@ def test_failed_tool_turn_does_not_damage_durable_history(model_server, tmp_path
         model_server.answer("小林")
         with Runtime(client, db_path=database) as runtime:
             runtime.run("我叫什么")
-        assert model_server.requests.get_nowait()["body"]["messages"][1:] == [
+        history = model_server.requests.get_nowait()["body"]["messages"][1:]
+        assert history[:2] == [
             {"role": "user", "content": "我叫小林"},
             {"role": "assistant", "content": "记住了"},
-            {"role": "user", "content": "我叫什么"},
         ]
+        assert history[-1] == {"role": "user", "content": "我叫什么"}
+        assert history[3]["tool_calls"][0]["id"] == history[4]["tool_call_id"]
+        assert json.loads(history[4]["content"]) == {"status": "ok", "result": 20}
+        assert "中断" in history[-2]["content"]

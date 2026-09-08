@@ -2,7 +2,7 @@
 
 一个用于学习 Agent 运行原理的 Python 命令行项目：直接调用 Qwen 的 OpenAI 兼容接口，自行实现工具循环、SQLite session 隔离和长对话压缩，不依赖 Agent 框架。
 
-当前支持普通对话、calculator 四则运算、mock/Tavily 搜索、持久 todo，以及 Issue #6 的基础 session memory。同步、非流式；模型显式返回的行动说明可以出现在 trace 中，但不读取或展示隐藏推理。
+当前支持普通对话、calculator 四则运算、mock/Tavily 搜索、持久 todo、基础 session memory，以及 Issue #7 的异常恢复和 JSONL 执行日志。同步、非流式；模型显式返回的行动说明可以出现在 trace 中，但不读取或展示隐藏推理。
 
 ## 安装与启动
 
@@ -81,7 +81,11 @@ Tavily 请求使用 basic 模式、最多 5 条结果，不请求全文或服务
 4. 若返回 tool_calls，校验参数并按顺序执行，将带匹配 tool_call_id 的结果放回 context。下一次请求前再次检查预算。
 5. 无 tool_calls 且有完整文本答案时结束，将当前 turn 的原始消息在事务中保存。
 
-有 content 且有 tool_calls 时，content 只是行动说明，不能提前当成最终答案。工具错误可以让模型在剩余 steps 内纠正。`trace` 输出 model_request、action、tool、stop；压缩增加 `purpose=summary` 的 model_request 和 memory_compacted。每轮数全部 model_request 即实际尝试次数，最多 **8 次主请求 + 1 次摘要请求**，不自动重试。
+有 content 且有 tool_calls 时，content 只是行动说明，不能提前当成最终答案。工具错误可以让模型在剩余 steps 内纠正。默认最多 **8 次主请求 + 1 次摘要请求**，不自动重试整个 turn，HTTP transport 显式设为零重试。`--max-steps` 调整主请求上限；超时约束每次 HTTP 阶段的等待，步数限制纠错循环，两者不是整轮墙钟截止时间。
+
+CLI 同时输出控制台 trace 和本地 `logs/trace.jsonl`，可用 `--trace-file` 指定路径。日志包含 user/session、跨重启唯一的 turn_id、进程内 turn 序号、step、tool_call_id、UTC 时间、事件状态、累计耗时和实际模型请求数 `actual_requests`。最终 stop 给出本轮总数（包含摘要、失败的请求）；model_request 是即将尝试请求的事件，不能把日志写入失败前的此事件当成已发送请求。搜索 HTTP 归入工具执行，不属于模型请求预算。
+
+事件包括 model_request/model_response、可选 action、tool_start/tool、stop、memory_compacted、recovery/recovered_tool。tool 的 `replayed` 区分重复写调用返回缓存与新执行；压缩事件记录 before_bytes/after_bytes。即使模型 content 为空也有完整调用日志。日志对配置密钥和认证字段脱敏，每个大字段最多保留 2048 字节预览，并附 truncated/original_bytes；原始参数和结果仍可保存在本地 SQLite。直接使用 Runtime 并配置其他服务密钥时，通过 `trace_secrets` 提供这些值以供脱敏。无法写日志时 CLI 明确报错并保留接收输入的能力。
 
 ## Memory：保存什么，什么时候召回
 
@@ -136,7 +140,11 @@ messages 已包含 system、摘要、近期完整消息与当前工具循环，t
 
 当前输入、Schema、保留的近期 turn 或工具循环不可缩减时明确报“过长”；缩短请求、调整预算或换 session 后再尝试。摘要输入超过独立预算也明确报错。本轮如果已经成功更新摘要，但后续模型失败，该有效摘要可以保留，原始历史仍在。
 
-失败 turn 不写消息历史，但此前执行成功的 todo 已独立提交，不会回滚。请先查询状态再重试，add 不保证重试幂等。CLI 会给出这一提示。正常退出码 0 只代表进程正常结束，不代表期间每一轮都成功。
+没有工具调用的失败轮不写消息历史。有工具调用时，在派发前保存 pending_turns 意图，每次工具结束后保存已知结果；下一次输入（也可以重启后）恢复未完成轮，补齐匹配 ID 的中断结果与应用结束说明，随后才发送合法的历史给模型。不自动重放整个 turn，也不声称部分成功的工具全部回滚或全部成功。
+
+todo 写操作及其结果在同一 SQLite 事务中提交，以应用分配的 user/session/turn_id/tool_call_id 为键。同一调用重放返回原结果，不重复添加；同一 ID 改参数返回 call_id_conflict。用户主动的新请求使用新的 turn_id，仍可以添加相同内容；list 总是读取当前状态。事务提交后、历史检查点写入前中断时，可从 tool_results 恢复准确结果；没有已提交结果的调用明确标记 interrupted，不猜测成功。请先查询状态再主动重试。正常退出码 0 只代表进程正常结束，不代表期间每一轮都成功。
+
+错误分类：API 为 authentication、rate_limit、timeout、network、empty_response、protocol_error、api_error；参数保留 invalid_arguments 并以 category 区分 malformed_json/schema_mismatch；工具为 unknown_tool、invalid_calculation、tool_exception、database_error 或搜索专用错误。可恢复工具错误返回模型继续纠正；API、预算或历史存储失败由应用结束本轮，CLI 解释后继续接收输入。
 
 ## 测试与真实演示
 
@@ -188,10 +196,36 @@ TDD 先观察缺少 memory 模块的失败，再实现压缩/重启；工具原�
 
 阅读顺序：`cli.py` 输入输出 → `runtime.py` turn/step 与压缩决策 → `memory.py` 字节预算及 context 投影 → `sessions.py` SQLite/占用锁 → `tools.py` 注册与执行 → `client.py` HTTP 协议。`config.py` 加载模型配置，`search.py` 实现模拟/联网搜索。
 
-Issue #6 保持打开等待审阅；不自动进入下一 Issue，不推送或合并 main。
+以上为 Issue #6 当时的开发记录；开始 #7 时已读取确认 #6 关闭。
 
 真实验收：2026-09-08 10:43:10 UTC 开始，qwen-plus，1 passed in 21.78s。首次运行 1 failed in 14.53s，失败点和修复见上，未记为通过。
 
 本次全量离线结果：**138 passed, 8 skipped in 67.80s**；8 项需显式开启的真实测试默认跳过，本步真实 memory 演示已单独通过。mypy 检查 10 个源文件通过，Ruff 检查及全部 29 个 Python 文件格式检查通过，`git diff --check` 通过。
 
 双轴只读审阅范围：`git diff 240eaa1f3b0606a48a92d4b958998f3fea2efe8d...6dfbed2`。Standards：0 项规范违反或需修改的代码异味；Spec：0 项缺失、范围外或错误实现。两个子代理分别核对规范与 Issue #6/#1，审阅后仅补充本段验证记录。
+
+## Issue #7 开发与验收记录
+
+实际用户 Prompt：`[$implement](C:\Users\1\.agents\skills\implement\SKILL.md) #7`；随后用户回复“同意”，确认 Runtime.run/CLI 测试边界和审阅基线 `04770a454bfa06eb5ec56df3bf0c8abb549b6313`。分支为 `codex/recovery-trace`，未跟踪 CONTEXT.md 保留。实现使用现有 Runtime 和 default_registry，不另建执行循环。
+
+实际 TDD 过程：先观察普通工具异常和数据库异常逃逸，再补结构化结果；观察重复 add 生成不同 ID，再将写入与结果记录放入事务；观察中断后恢复历史为空，再增加检查点及配对修复。随后故障测试发现缺少错误分类和日志文件参数，逐项补齐。脱敏测试发现 Authorization 的 Bearer 值泄漏，修正后回归；重复 list ID 返回旧结果的回归失败后，将只读查询排除在写操作缓存外。两项旧测试的“丢弃失败工具轮”断言与本期恢复要求冲突，已改为验证保留结果和中断标记。
+
+| #7 验收项 | 公共边界证据 |
+| --- | --- |
+| API 分类、超时、禁用重试、失败后可继续 | `test_api_failure_trace_counts_attempt_and_next_turn`、`test_transport_failures_are_counted_without_retry_and_next_turn_works`；既有 CLI 超时/鉴权测试 |
+| 畸形 JSON、Schema、未知工具、工具/数据库异常和部分成功 | `test_argument_errors_are_distinguished_and_correctable`、`test_tool_failure_keeps_success_and_can_continue`、既有 Runtime 多工具测试 |
+| 纠错受上限约束、下一轮可继续 | `test_cli_step_limit_trace_and_followup`、既有默认 8 步测试 |
+| 同次写重放幂等、新请求仍能写入 | `test_replayed_todo_is_once_per_turn_but_new_request_can_add` |
+| 事务结果与恢复，不盲目重放 | `test_database_fault_never_duplicates_or_loses_committed_todo`、`test_restart_repairs_interrupted_calls_without_replaying_writes` |
+| JSONL、身份/调用/耗时/状态/停止原因、空行动说明 | `test_cli_jsonl_trace_is_bounded_redacted_and_complete` |
+| 摘要实际请求计数与压缩大小 | `test_summary_trace_counts_actual_requests_and_compression` |
+| 有界参数/结果、脱敏 | JSONL 测试、既有大工具结果测试；日志与模型 context 采用独立限额 |
+| 离线失败恢复与上限演示 | `examples/offline_recovery.py`，运行证据见下 |
+
+离线演示不需要外部 API，使用真实 CLI、临时 SQLite、回环 HTTP 脚本化模型及未知工具错误：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 examples/offline_recovery.py
+```
+
+输入依次为“故障注入”“继续”“达到上限”。脚本自动验证 stop 请求数为 1、1、2，并打印可解释原因的 trace。运行记录：[issue-7-offline.txt](docs/evidence/issue-7-offline.txt)。本期未运行真实 Qwen/Tavily API；不得把离线结果或 #6 的真实运行记录当成本期真实 API 验收。Issue #7 保持打开等待用户审阅，不自动进入下一步。

@@ -16,16 +16,22 @@ class Message(TypedDict):
 class ModelError(Exception):
     """A safe, user-facing model service error."""
 
+    def __init__(self, message: str, code: str = "context_error") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class ModelClient:
     """Own the synchronous OpenAI-compatible HTTP request and response conversion."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.request_count = 0
         self.http = httpx.Client(
             timeout=settings.timeout_seconds,
             headers={"Authorization": f"Bearer {settings.api_key}"},
             trust_env=False,
+            transport=httpx.HTTPTransport(retries=0, trust_env=False),
         )
 
     def __enter__(self) -> "ModelClient":
@@ -64,6 +70,7 @@ class ModelClient:
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         try:
+            self.request_count += 1
             response = self.http.post(
                 f"{self.settings.base_url.rstrip('/')}/chat/completions",
                 json=payload,
@@ -72,9 +79,11 @@ class ModelClient:
                 else timeout_seconds,
             )
         except httpx.TimeoutException:
-            raise ModelError("模型请求超时，请稍后重试或调整 LLM_TIMEOUT_SECONDS。") from None
+            raise ModelError(
+                "模型请求超时，请稍后重试或调整 LLM_TIMEOUT_SECONDS。", "timeout"
+            ) from None
         except httpx.RequestError:
-            raise ModelError("无法连接模型服务：请检查网络与 LLM_BASE_URL。") from None
+            raise ModelError("无法连接模型服务：请检查网络与 LLM_BASE_URL。", "network") from None
         if response.is_error:
             hints = {
                 401: "鉴权失败：请检查 DASHSCOPE_API_KEY 与地域是否匹配。",
@@ -88,9 +97,17 @@ class ModelClient:
                     if response.status_code >= 500
                     else "请求被拒绝：请检查模型名称、base URL 与账号配置。"
                 )
-            raise ModelError(hint)
+            code = {401: "authentication", 403: "authentication", 429: "rate_limit"}.get(
+                response.status_code, "api_error"
+            )
+            raise ModelError(hint, code)
         try:
-            choice = response.json()["choices"][0]
+            if not response.content.strip():
+                raise ModelError("模型协议错误：响应为空。", "empty_response")
+            choices = response.json()["choices"]
+            if choices == []:
+                raise ModelError("模型协议错误：响应为空。", "empty_response")
+            choice = choices[0]
             message = choice["message"]
             content = message.get("content")
             calls = message.get("tool_calls")
@@ -133,7 +150,9 @@ class ModelClient:
                     )
                 result["tool_calls"] = normalized
             elif not isinstance(content, str) or not content.strip():
-                raise ValueError
+                raise ModelError("模型协议错误：未返回有效的完整文本回答。", "empty_response")
             return result
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-            raise ModelError("模型协议错误：未返回有效的完整文本回答或工具调用。") from None
+            raise ModelError(
+                "模型协议错误：未返回有效的完整文本回答或工具调用。", "protocol_error"
+            ) from None

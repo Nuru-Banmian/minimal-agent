@@ -1,5 +1,6 @@
 import json
 import math
+import sqlite3
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -7,7 +8,9 @@ from typing import Any
 from jsonschema import Draft202012Validator, ValidationError
 
 from minimal_agent.search import SearchError, search
-from minimal_agent.sessions import SessionStore
+from minimal_agent.sessions import CallConflict, SessionStore
+
+ReplayRunner = Callable[[str, str, str, Callable[[], Any]], tuple[Any, bool]]
 
 
 class ToolRegistry:
@@ -15,9 +18,17 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, tuple[dict[str, Any], Callable[..., Any]]] = {}
+        self._replay: dict[str, ReplayRunner] = {}
+        self.replayed = False
 
     def register(
-        self, name: str, description: str, schema: dict[str, Any], execute: Callable[..., Any]
+        self,
+        name: str,
+        description: str,
+        schema: dict[str, Any],
+        execute: Callable[..., Any],
+        *,
+        replay: ReplayRunner | None = None,
     ) -> None:
         if not name.strip() or name in self._tools:
             raise ValueError("工具名称为空或重复")
@@ -37,25 +48,51 @@ class ToolRegistry:
             },
             execute,
         )
+        if replay is not None:
+            self._replay[name] = replay
 
     def definitions(self) -> list[dict[str, Any]]:
         return [deepcopy(definition) for definition, _ in self._tools.values()]
 
-    def execute(self, name: str, arguments: str) -> dict[str, Any]:
+    def execute(
+        self, name: str, arguments: str, *, turn_id: str = "", call_id: str = ""
+    ) -> dict[str, Any]:
+        self.replayed = False
         if name not in self._tools:
             return {"status": "error", "error": "unknown_tool"}
         definition, execute = self._tools[name]
         try:
             params = json.loads(arguments, parse_constant=_reject_constant)
+        except (ValueError, OverflowError, RecursionError):
+            return {"status": "error", "error": "invalid_arguments", "category": "malformed_json"}
+        try:
             Draft202012Validator(definition["function"]["parameters"]).validate(params)
         except (ValueError, ValidationError, OverflowError, RecursionError):
-            return {"status": "error", "error": "invalid_arguments"}
+            return {"status": "error", "error": "invalid_arguments", "category": "schema_mismatch"}
         try:
-            result = execute(**params)
+            if name in self._replay and turn_id and call_id:
+                result, self.replayed = self._replay[name](
+                    turn_id,
+                    call_id,
+                    json.dumps(params, sort_keys=True, ensure_ascii=False),
+                    lambda: execute(**params),
+                )
+            else:
+                result = execute(**params)
+            json.dumps(result, allow_nan=False)
+        except CallConflict:
+            return {"status": "error", "error": "call_id_conflict"}
         except SearchError as error:
             return {"status": "error", "error": str(error)}
         except (ValueError, OverflowError, ZeroDivisionError):
-            return {"status": "error", "error": "invalid_calculation"}
+            return {
+                "status": "error",
+                "error": ("invalid_calculation" if name == "calculator" else "tool_exception"),
+            }
+        except sqlite3.Error:
+            return {"status": "error", "error": "database_error"}
+        except Exception:
+            return {"status": "error", "error": "tool_exception"}
         return {"status": "ok", "result": result}
 
 
@@ -153,5 +190,6 @@ def default_registry(
             ],
         },
         store.todo,
+        replay=store.execute_once,
     )
     return registry
