@@ -4,18 +4,18 @@
 
 当前支持普通对话、calculator 四则运算、mock/Tavily 搜索、持久 todo、基础 session memory，以及 Issue #7 的异常恢复和 JSONL 执行日志。同步、非流式；模型显式返回的行动说明可以出现在 trace 中，但不读取或展示隐藏推理。
 
-最终验收入口：[Issue #8 验收报告与逐项矩阵](docs/acceptance.md)、[实际开发与运行时 Prompt](docs/prompts.md)。下文 #6/#7 的测试计数和状态是历史记录，当前结果以验收报告为准。#8 的新增材料在本地分支 `codex/issue-8-acceptance`，尚未推送；等待用户审阅，不自动关闭总规格或合并 main。
+最终验收入口：[Issue #8 验收报告与逐项矩阵](docs/acceptance.md)、[实际开发与运行时 Prompt](docs/prompts.md)。下文 #6/#7 的测试计数和状态是历史记录，最终验收结果以验收报告为准。用户已审阅并授权将 #7/#8 合并到 main；验收报告保留合并前的原始状态快照。
 
-已发布且本轮核对可访问的[代码基线 e439144](https://github.com/Nuru-Banmian/minimal-agent/tree/e43914454e26b4eba0fbd6561043148412d5280c)包含 #7。GitHub main 当前仍为 #6 合并版本；以上链接不代表 #8 已发布。
+[完整代码与验收材料](https://github.com/Nuru-Banmian/minimal-agent/tree/main)；[验收基线 e439144](https://github.com/Nuru-Banmian/minimal-agent/tree/e43914454e26b4eba0fbd6561043148412d5280c)用于追溯 #8 之前的版本。
 
 ## 安装与启动
 
 需要 Python 3.11+。在项目根目录的 PowerShell 执行（已有 `.venv` 时跳过创建）：
 
-首次下载可执行以下命令；该远程分支提供 #7 基线。#8 新增验收文件发布前，请在本地交付分支使用它们。
+首次下载可执行以下命令：
 
 ```powershell
-git clone --branch codex/recovery-trace https://github.com/Nuru-Banmian/minimal-agent.git
+git clone --branch main https://github.com/Nuru-Banmian/minimal-agent.git
 Set-Location minimal-agent
 ```
 

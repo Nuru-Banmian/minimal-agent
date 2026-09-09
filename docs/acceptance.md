@@ -1,5 +1,7 @@
 # Issue #8：完整验收报告
 
+发布说明：完成本报告后，用户明确回复“推送合并并关闭”，授权推送本分支、将 #7/#8 合并到 main，并关闭 #8 与总规格 #1。[最终代码入口](https://github.com/Nuru-Banmian/minimal-agent/tree/main)。下文的未发布、待审阅和 OPEN 状态保留为合并前验收快照；发布后的状态以关联 PR 和 Issue 为准。
+
 验收日期：2026-09-09。规格：[总规格 #1](https://github.com/Nuru-Banmian/minimal-agent/issues/1)、[交付验收 #8](https://github.com/Nuru-Banmian/minimal-agent/issues/8)。前置 #7 本轮读取为 CLOSED。
 
 审阅基线：`e43914454e26b4eba0fbd6561043148412d5280c`。本步分支：`codex/issue-8-acceptance`。新增验收测试和文档，没有修改产品执行逻辑。CLI、`Runtime.run`、工具注册表公共接口为用户确认的测试边界；SQLite 使用临时文件。未跟踪的 `CONTEXT.md` 未修改、未纳入交付。
