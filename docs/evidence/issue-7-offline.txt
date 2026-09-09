@@ -1,0 +1,27 @@
+离线演示：真实 CLI + 回环 HTTP 脚本化模型；无真实 API。
+输入：故障注入 / 继续 / 达到上限 / exit
+当前会话：user_id=local session_id=default db=C:\Users\1\AppData\Local\Temp\tmpemc4q5rb\demo.sqlite3
+搜索模式：mock 模拟资料
+最小聊天 CLI：空输入跳过，输入 /exit 或 /quit 退出。
+你：trace: {"timestamp": "2026-09-08T11:07:37.494044+00:00", "user_id": "local", "session_id": "default", "turn": 1, "turn_id": "dc6c0f882ca34b48b99d317b7e679f83", "step": 1, "tool_call_id": null, "event": "model_request", "status": "ok", "elapsed_ms": 0.597, "actual_requests": 0, "purpose": "decision"}
+trace: {"timestamp": "2026-09-08T11:07:37.499195+00:00", "user_id": "local", "session_id": "default", "turn": 1, "turn_id": "dc6c0f882ca34b48b99d317b7e679f83", "step": 1, "tool_call_id": null, "event": "model_response", "status": "error", "elapsed_ms": 5.744, "actual_requests": 1, "purpose": "decision", "error": "rate_limit", "duration_ms": 4.021}
+trace: {"timestamp": "2026-09-08T11:07:37.499979+00:00", "user_id": "local", "session_id": "default", "turn": 1, "turn_id": "dc6c0f882ca34b48b99d317b7e679f83", "step": 1, "tool_call_id": null, "event": "stop", "status": "error", "elapsed_ms": 6.527, "actual_requests": 1, "reason": "model_error", "error": "rate_limit"}
+你：trace: {"timestamp": "2026-09-08T11:07:37.501199+00:00", "user_id": "local", "session_id": "default", "turn": 2, "turn_id": "f824d70d3d5f45b7839922223488f50d", "step": 1, "tool_call_id": null, "event": "model_request", "status": "ok", "elapsed_ms": 0.551, "actual_requests": 0, "purpose": "decision"}
+trace: {"timestamp": "2026-09-08T11:07:37.502687+00:00", "user_id": "local", "session_id": "default", "turn": 2, "turn_id": "f824d70d3d5f45b7839922223488f50d", "step": 1, "tool_call_id": null, "event": "model_response", "status": "ok", "elapsed_ms": 2.037, "actual_requests": 1, "purpose": "decision", "duration_ms": 0.869}
+trace: {"timestamp": "2026-09-08T11:07:37.505623+00:00", "user_id": "local", "session_id": "default", "turn": 2, "turn_id": "f824d70d3d5f45b7839922223488f50d", "step": 1, "tool_call_id": null, "event": "stop", "status": "ok", "elapsed_ms": 4.975, "actual_requests": 1, "reason": "final_answer"}
+助手：失败后已恢复，可以继续输入。
+你：trace: {"timestamp": "2026-09-08T11:07:37.506752+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 1, "tool_call_id": null, "event": "model_request", "status": "ok", "elapsed_ms": 0.478, "actual_requests": 0, "purpose": "decision"}
+trace: {"timestamp": "2026-09-08T11:07:37.531179+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 1, "tool_call_id": null, "event": "model_response", "status": "ok", "elapsed_ms": 24.907, "actual_requests": 1, "purpose": "decision", "duration_ms": 23.788}
+trace: {"timestamp": "2026-09-08T11:07:37.534499+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 1, "tool_call_id": "bad-0", "event": "tool_start", "status": "ok", "elapsed_ms": 28.23, "actual_requests": 1, "name": "missing", "arguments": "{}"}
+trace: {"timestamp": "2026-09-08T11:07:37.537514+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 1, "tool_call_id": "bad-0", "event": "tool", "status": "error", "elapsed_ms": 31.24, "actual_requests": 1, "name": "missing", "arguments": "{}", "replayed": false, "duration_ms": 3.013, "error": "unknown_tool"}
+trace: {"timestamp": "2026-09-08T11:07:37.538309+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 2, "tool_call_id": null, "event": "model_request", "status": "ok", "elapsed_ms": 32.036, "actual_requests": 1, "purpose": "decision"}
+trace: {"timestamp": "2026-09-08T11:07:37.562114+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 2, "tool_call_id": null, "event": "model_response", "status": "ok", "elapsed_ms": 55.841, "actual_requests": 2, "purpose": "decision", "duration_ms": 23.198}
+trace: {"timestamp": "2026-09-08T11:07:37.565200+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 2, "tool_call_id": "bad-1", "event": "tool_start", "status": "ok", "elapsed_ms": 58.927, "actual_requests": 2, "name": "missing", "arguments": "{}"}
+trace: {"timestamp": "2026-09-08T11:07:37.567862+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 2, "tool_call_id": "bad-1", "event": "tool", "status": "error", "elapsed_ms": 61.589, "actual_requests": 2, "name": "missing", "arguments": "{}", "replayed": false, "duration_ms": 2.66, "error": "unknown_tool"}
+trace: {"timestamp": "2026-09-08T11:07:37.568527+00:00", "user_id": "local", "session_id": "default", "turn": 3, "turn_id": "205ecdba84ed44ff8874534bf2751df6", "step": 2, "tool_call_id": null, "event": "stop", "status": "error", "elapsed_ms": 62.254, "actual_requests": 2, "reason": "step_limit", "error": "step_limit"}
+你：再见！
+
+请求失败：请求过多或额度不足：请稍后重试并检查额度。 本轮任务未完成；已执行的待办可能已保存，中断调用将在下次输入时恢复状态，请先查询再重试。
+请求失败：达到 2 次模型调用上限，任务未完成。 本轮任务未完成；已执行的待办可能已保存，中断调用将在下次输入时恢复状态，请先查询再重试。
+
+已验证：限流失败请求 1 次；下一轮恢复 1 次；工具纠错达到上限 2 次。

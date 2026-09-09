@@ -8,6 +8,7 @@ from test_search_todo import tool_call, tool_turn
 
 from minimal_agent.client import ModelClient
 from minimal_agent.config import Settings
+from minimal_agent.memory import MemorySettings
 from minimal_agent.runtime import Runtime
 from minimal_agent.search import TavilySearch
 
@@ -113,16 +114,23 @@ def test_web_search_empty_invalid_and_bounded_results(model_server, payload, exp
         "test-key", transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
     )
     with ModelClient(Settings("qwen-plus", model_server.url, "test-key")) as client:
-        with Runtime(client, search_tool=search) as runtime:
+        with Runtime(
+            client, search_tool=search, memory=MemorySettings(tool_result_bytes=20000)
+        ) as runtime:
             event = tool_turn(model_server, runtime, "search", query="test")
     if expected == "error":
         assert event["status"] == "error" and event["error"] == "search_invalid_response"
     elif expected == "empty":
         assert event["result"]["matches"] == [] and "无命中" in event["result"]["notice"]
     else:
-        assert len(event["result"]["matches"]) == 5 and event["result"]["truncated"] is True
-        assert len(event["result"]["matches"][0]["content"]) == 2000
-        assert event["result"]["matches"][0]["truncated"] is True
+        assert event["result"]["truncated"] is True
+        assert event["result"]["original_bytes"] > 2048
+        model_server.requests.get_nowait()
+        tool = model_server.requests.get_nowait()["body"]["messages"][-1]
+        result = json.loads(tool["content"])["result"]
+        assert len(result["matches"]) == 5 and result["truncated"] is True
+        assert len(result["matches"][0]["content"]) == 2000
+        assert result["matches"][0]["truncated"] is True
 
 
 def test_cli_selects_network_mode_from_env_and_flag_overrides(model_server):

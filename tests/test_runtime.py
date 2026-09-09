@@ -151,11 +151,15 @@ def test_runtime_default_limit_counts_corrections_and_allows_next_turn(model_ser
         with pytest.raises(ModelError, match="8.*任务未完成"):
             runtime.run("循环")
         assert model_server.requests.qsize() == 8
-        assert events[-1] == {"turn": 1, "step": 8, "event": "stop", "reason": "step_limit"}
+        assert events[-1]["reason"] == "step_limit"
+        assert events[-1]["actual_requests"] == 8
         assert len([e for e in events if e["event"] == "tool"]) == 8
         assert runtime.run("新问题") == "重新开始"
     requests = [model_server.requests.get_nowait() for _ in range(9)]
-    assert requests[-1]["body"]["messages"][1:] == [{"role": "user", "content": "新问题"}]
+    history = requests[-1]["body"]["messages"]
+    assert history[-1] == {"role": "user", "content": "新问题"}
+    assert "中断" in history[-2]["content"]
+    assert len([m for m in history if m["role"] == "tool"]) == 8
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
 from uuid import uuid4
@@ -12,6 +13,10 @@ from minimal_agent.client import Message
 
 class SessionError(Exception):
     """A session could not be opened, read, or committed safely."""
+
+
+class CallConflict(Exception):
+    """A call ID was reused with different arguments."""
 
 
 class SessionStore:
@@ -72,6 +77,17 @@ class SessionStore:
                     "summary TEXT NOT NULL, covered INTEGER NOT NULL, "
                     "PRIMARY KEY (user_id, session_id))"
                 )
+                self.connection.execute(
+                    "CREATE TABLE IF NOT EXISTS tool_results ("
+                    "user_id TEXT, session_id TEXT, turn_id TEXT, call_id TEXT, "
+                    "arguments TEXT NOT NULL, result TEXT NOT NULL, "
+                    "PRIMARY KEY (user_id, session_id, turn_id, call_id))"
+                )
+                self.connection.execute(
+                    "CREATE TABLE IF NOT EXISTS pending_turns ("
+                    "user_id TEXT, session_id TEXT, turn_id TEXT NOT NULL, payload TEXT NOT NULL, "
+                    "PRIMARY KEY (user_id, session_id))"
+                )
         except BaseException:
             self.close()
             raise
@@ -100,6 +116,69 @@ class SessionStore:
                     for offset, message in enumerate(messages, 1)
                 ],
             )
+            self.connection.execute(
+                "DELETE FROM pending_turns WHERE user_id=? AND session_id=?", self.identity
+            )
+
+    def checkpoint(self, turn_id: str, messages: list[Message]) -> None:
+        """Persist intent before dispatch, and observed results after each call."""
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO pending_turns VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(user_id, session_id) DO UPDATE SET "
+                "turn_id=excluded.turn_id, payload=excluded.payload",
+                (*self.identity, turn_id, json.dumps(messages, ensure_ascii=False)),
+            )
+
+    def recover(self) -> tuple[str, list[Message]] | None:
+        row = self.connection.execute(
+            "SELECT turn_id, payload FROM pending_turns WHERE user_id=? AND session_id=?",
+            self.identity,
+        ).fetchone()
+        if row is None:
+            return None
+        turn_id, payload = row
+        messages: list[Message] = json.loads(payload)
+        pending: list[dict[str, Any]] = []
+        for message in messages:
+            if message["role"] == "assistant":
+                pending = list(message.get("tool_calls", []))
+            elif message["role"] == "tool":
+                pending = [c for c in pending if c["id"] != message["tool_call_id"]]
+        for call in pending:
+            result: dict[str, Any] = {"status": "error", "error": "interrupted"}
+            saved = self.connection.execute(
+                "SELECT arguments, result FROM tool_results "
+                "WHERE user_id=? AND session_id=? AND turn_id=? AND call_id=?",
+                (*self.identity, turn_id, call["id"]),
+            ).fetchone()
+            if saved and call["function"]["name"] == "todo":
+                try:
+                    arguments = json.dumps(
+                        json.loads(call["function"]["arguments"]),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                except ValueError:
+                    arguments = ""
+                if arguments == saved[0]:
+                    result = {"status": "ok", "result": json.loads(saved[1])}
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "应用已结束上次未完成或中断的运行；已知结果如上。"
+                "中断调用的结果未知，未自动重放，请先查询实际状态。",
+            }
+        )
+        self.append(messages)
+        return str(turn_id), messages
 
     def recall(self) -> tuple[str, int, list[Message]]:
         row = self.connection.execute(
@@ -136,33 +215,61 @@ class SessionStore:
         self, action: str, content: str | None = None, id: str | None = None
     ) -> dict[str, Any]:
         """Execute with the store's identity, never with model-supplied identity."""
+        if self.connection.in_transaction:
+            return self._todo(action, content, id)
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            return self._todo(action, content, id)
+
+    def execute_once(
+        self, turn_id: str, call_id: str, arguments: str, execute: Callable[[], Any]
+    ) -> tuple[Any, bool]:
+        """Commit the todo mutation and its replay result in one transaction."""
+        if json.loads(arguments)["action"] == "list":
+            return execute(), False
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            key = (*self.identity, turn_id, call_id)
+            row = self.connection.execute(
+                "SELECT arguments, result FROM tool_results "
+                "WHERE user_id=? AND session_id=? AND turn_id=? AND call_id=?",
+                key,
+            ).fetchone()
+            if row:
+                if row[0] != arguments:
+                    raise CallConflict
+                return json.loads(row[1]), True
+            result = execute()
+            self.connection.execute(
+                "INSERT INTO tool_results VALUES (?, ?, ?, ?, ?, ?)",
+                (*key, arguments, json.dumps(result, ensure_ascii=False, allow_nan=False)),
+            )
+            return result, False
+
+    def _todo(self, action: str, content: str | None, id: str | None) -> dict[str, Any]:
         if action == "add":
             assert content is not None
             item = {"id": uuid4().hex, "content": content.strip(), "completed": False}
-            with self.connection:
-                self.connection.execute(
-                    "INSERT INTO todos (id, user_id, session_id, content) VALUES (?, ?, ?, ?)",
-                    (item["id"], *self.identity, item["content"]),
-                )
+            self.connection.execute(
+                "INSERT INTO todos (id, user_id, session_id, content) VALUES (?, ?, ?, ?)",
+                (item["id"], *self.identity, item["content"]),
+            )
             return {"outcome": "added", "item": item}
         if action == "complete":
-            with self.connection:
-                self.connection.execute("BEGIN IMMEDIATE")
-                row = self.connection.execute(
-                    "SELECT content, completed FROM todos "
-                    "WHERE user_id = ? AND session_id = ? AND id = ?",
-                    (*self.identity, id),
-                ).fetchone()
-                if row is None:
-                    return {
-                        "outcome": "not_found",
-                        "message": "当前 session 找不到该 ID，未完成任何待办。",
-                    }
-                self.connection.execute(
-                    "UPDATE todos SET completed = 1 "
-                    "WHERE user_id = ? AND session_id = ? AND id = ?",
-                    (*self.identity, id),
-                )
+            row = self.connection.execute(
+                "SELECT content, completed FROM todos "
+                "WHERE user_id = ? AND session_id = ? AND id = ?",
+                (*self.identity, id),
+            ).fetchone()
+            if row is None:
+                return {
+                    "outcome": "not_found",
+                    "message": "当前 session 找不到该 ID，未完成任何待办。",
+                }
+            self.connection.execute(
+                "UPDATE todos SET completed = 1 WHERE user_id = ? AND session_id = ? AND id = ?",
+                (*self.identity, id),
+            )
             return {
                 "outcome": "already_completed" if row[1] else "completed",
                 "item": {"id": id, "content": row[0], "completed": True},

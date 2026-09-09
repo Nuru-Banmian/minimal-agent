@@ -9,6 +9,7 @@ from minimal_agent.memory import MemorySettings
 from minimal_agent.runtime import Runtime
 from minimal_agent.search import TavilySearch, search
 from minimal_agent.sessions import SessionError
+from minimal_agent.trace import JsonlTrace, TraceError
 
 
 def main() -> int:
@@ -23,7 +24,17 @@ def main() -> int:
     parser.add_argument(
         "--db", default="agent.sqlite3", help="SQLite 路径；默认当前目录 agent.sqlite3"
     )
+    parser.add_argument("--trace-file", default="logs/trace.jsonl", help="本地 JSONL 执行日志")
+    parser.add_argument("--max-steps", type=int, default=8, help="每轮决策请求上限；摘要最多另一次")
     args = parser.parse_args()
+    if args.max_steps < 1:
+        parser.error("--max-steps 必须是正整数")
+    jsonl = JsonlTrace(args.trace_file)
+
+    def trace(event: dict[str, object]) -> None:
+        jsonl(event)
+        print("trace: " + json.dumps(event, ensure_ascii=False))
+
     try:
         settings = Settings.from_env()
         memory = MemorySettings.from_env()
@@ -48,7 +59,9 @@ def main() -> int:
                 session_id=args.session_id,
                 search_tool=search_tool,
                 memory=memory,
-                trace=lambda event: print("trace: " + json.dumps(event, ensure_ascii=False)),
+                max_steps=args.max_steps,
+                trace=trace,
+                trace_secrets=(os.environ.get("TAVILY_API_KEY", ""),),
             ) as runtime,
         ):
             print(f"当前会话：user_id={args.user_id} session_id={args.session_id} db={args.db}")
@@ -62,10 +75,10 @@ def main() -> int:
                     continue
                 try:
                     answer = runtime.run(text)
-                except (ModelError, SessionError) as error:
+                except (ModelError, SessionError, TraceError) as error:
                     print(
-                        f"请求失败：{error} 本轮未写入历史；"
-                        "已执行的待办可能已保存，请先查询再重试。",
+                        f"请求失败：{error} 本轮任务未完成；"
+                        "已执行的待办可能已保存，中断调用将在下次输入时恢复状态，请先查询再重试。",
                         file=sys.stderr,
                     )
                     continue

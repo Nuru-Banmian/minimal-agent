@@ -1,15 +1,19 @@
 import json
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from types import TracebackType
 from typing import Any
+from uuid import uuid4
 
 from minimal_agent.client import Message, ModelClient, ModelError
 from minimal_agent.memory import MemorySettings, encoded_size, split_turns, summary_message
 from minimal_agent.search import search
 from minimal_agent.sessions import SessionError, SessionStore
 from minimal_agent.tools import ToolRegistry, default_registry
+from minimal_agent.trace import safe_event
 
 
 class Runtime:
@@ -27,6 +31,7 @@ class Runtime:
         session_id: str = "default",
         search_tool: Callable[[str], dict[str, Any]] = search,
         memory: MemorySettings | None = None,
+        trace_secrets: tuple[str, ...] = (),
     ) -> None:
         if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
             raise ValueError("max_steps 必须是正整数")
@@ -34,6 +39,7 @@ class Runtime:
         self.memory = memory if memory is not None else MemorySettings()
         self.max_steps = max_steps
         self.trace = trace
+        self._trace_secrets = (client.settings.api_key, *trace_secrets)
         self.turn = 0
         self._system: list[Message] = [
             {
@@ -84,37 +90,86 @@ class Runtime:
 
     def _emit(self, step: int, event: str, **fields: Any) -> None:
         if self.trace is not None:
-            self.trace({"turn": self.turn, "step": step, "event": event, **fields})
+            self.trace(
+                safe_event(
+                    {
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "user_id": self._store.identity[0],
+                        "session_id": self._store.identity[1],
+                        "turn": self.turn,
+                        "turn_id": self.turn_id,
+                        "step": step,
+                        "tool_call_id": None,
+                        "event": event,
+                        "status": "ok",
+                        "elapsed_ms": round((perf_counter() - self._started) * 1000, 3),
+                        "actual_requests": self.client.request_count - self._request_start,
+                        **fields,
+                    },
+                    self._trace_secrets,
+                )
+            )
 
     def run(self, text: str) -> str:
+        self.turn += 1
+        self.turn_id = uuid4().hex
+        self._started = perf_counter()
+        self._request_start = self.client.request_count
+        self._step = 0
         try:
             return self._run(text)
+        except ModelError as error:
+            self._emit(
+                self._step,
+                "stop",
+                reason=("step_limit" if error.code == "step_limit" else "model_error"),
+                status="error",
+                error=error.code,
+            )
+            raise
+        except SessionError:
+            self._emit(
+                self._step, "stop", reason="database_error", status="error", error="database_error"
+            )
+            raise
         except sqlite3.Error as error:
-            raise SessionError(
-                "会话读写失败，本轮历史未保存；已执行的待办可能已写入，请先查询待办。"
-            ) from error
+            self._emit(
+                self._step, "stop", reason="database_error", status="error", error="database_error"
+            )
+            raise SessionError("会话读写失败；已执行的待办可能已写入，请先查询待办。") from error
+        except (KeyboardInterrupt, SystemExit):
+            self._emit(
+                self._step, "stop", reason="interrupted", status="error", error="interrupted"
+            )
+            raise
 
     def _run(self, text: str) -> str:
-        self.turn += 1
         self._summary_attempted = False
+        recovered = self._store.recover()
+        if recovered:
+            recovered_id, recovered_messages = recovered
+            self._emit(0, "recovery", recovered_turn_id=recovered_id)
+            for message in recovered_messages:
+                if message["role"] == "tool":
+                    self._emit(
+                        0,
+                        "recovered_tool",
+                        recovered_turn_id=recovered_id,
+                        tool_call_id=message["tool_call_id"],
+                        **json.loads(message["content"] or "{}"),
+                    )
         current: list[Message] = [{"role": "user", "content": text}]
         history = self._recall(current)
         messages: list[Message] = [*history, *current]
         for step in range(1, self.max_steps + 1):
+            self._step = step
             if not self.memory.fits(messages, self.registry.definitions()):
                 if self._summary_attempted:
                     raise ModelError("当前输入或不可缩减上下文过长，请缩短请求或新建 session。")
                 projected = self.memory.project(current)
                 history = self._recall(projected)
                 messages = [*history, *projected]
-            self._emit(step, "model_request")
-            try:
-                answer = self.client.decide(
-                    messages, self.registry.definitions(), max_tokens=self.memory.output_tokens
-                )
-            except ModelError:
-                self._emit(step, "stop", reason="model_error")
-                raise
+            answer = self._request(messages, self.registry.definitions())
             messages.append(answer)
             current.append(answer)
             calls = answer.get("tool_calls", [])
@@ -125,22 +180,71 @@ class Runtime:
                 return answer["content"]
             if answer["content"]:
                 self._emit(step, "action", content=answer["content"])
+            self._store.checkpoint(self.turn_id, current)
             for call in calls:
+                started = perf_counter()
                 name = call["function"]["name"]
                 arguments = call["function"]["arguments"]
-                result = self.registry.execute(name, arguments)
+                self._emit(
+                    step, "tool_start", tool_call_id=call["id"], name=name, arguments=arguments
+                )
+                result = self.registry.execute(
+                    name, arguments, turn_id=self.turn_id, call_id=call["id"]
+                )
                 tool_message: Message = {
                     "role": "tool",
                     "tool_call_id": call["id"],
                     "content": json.dumps(result, ensure_ascii=False, allow_nan=False),
                 }
                 current.append(tool_message)
+                self._store.checkpoint(self.turn_id, current)
                 messages.extend(self.memory.project([tool_message]))
                 self._emit(
-                    step, "tool", tool_call_id=call["id"], name=name, arguments=arguments, **result
+                    step,
+                    "tool",
+                    tool_call_id=call["id"],
+                    name=name,
+                    arguments=arguments,
+                    replayed=self.registry.replayed,
+                    duration_ms=round((perf_counter() - started) * 1000, 3),
+                    **result,
                 )
-        self._emit(self.max_steps, "stop", reason="step_limit")
-        raise ModelError(f"达到 {self.max_steps} 次模型调用上限，任务未完成。")
+        raise ModelError(f"达到 {self.max_steps} 次模型调用上限，任务未完成。", "step_limit")
+
+    def _request(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        summary: bool = False,
+    ) -> Message:
+        purpose = "summary" if summary else "decision"
+        self._emit(self._step, "model_request", purpose=purpose)
+        started = perf_counter()
+        try:
+            result = self.client.decide(
+                messages,
+                tools,
+                max_tokens=self.memory.output_tokens,
+                timeout_seconds=self.memory.summary_timeout_seconds if summary else None,
+            )
+        except ModelError as error:
+            self._emit(
+                self._step,
+                "model_response",
+                purpose=purpose,
+                status="error",
+                error=error.code,
+                duration_ms=round((perf_counter() - started) * 1000, 3),
+            )
+            raise
+        self._emit(
+            self._step,
+            "model_response",
+            purpose=purpose,
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        )
+        return result
 
     def _recall(self, current: list[Message]) -> list[Message]:
         summary, covered, recent = self._store.recall()
@@ -177,12 +281,8 @@ class Runtime:
         if encoded_size({"messages": prompt}) > self.memory.summary_input_bytes:
             raise ModelError("摘要输入超过独立预算，未修改历史；请新建 session。")
         self._summary_attempted = True
-        self._emit(0, "model_request", purpose="summary")
-        result = self.client.decide(
-            prompt,
-            max_tokens=self.memory.output_tokens,
-            timeout_seconds=self.memory.summary_timeout_seconds,
-        )
+        before_bytes = encoded_size({"messages": [*history, *current], "tools": tools})
+        result = self._request(prompt, summary=True)
         content = result["content"]
         if (
             result.get("tool_calls")
@@ -195,5 +295,11 @@ class Runtime:
         if not self.memory.fits([*history, *current], tools):
             raise ModelError("摘要后上下文仍过长，未修改历史；请缩短请求或新建 session。")
         self._store.remember(content, covered + len(source))
-        self._emit(0, "memory_compacted", covered=covered + len(source))
+        self._emit(
+            0,
+            "memory_compacted",
+            covered=covered + len(source),
+            before_bytes=before_bytes,
+            after_bytes=encoded_size({"messages": [*history, *current], "tools": tools}),
+        )
         return history

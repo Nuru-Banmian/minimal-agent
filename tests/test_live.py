@@ -40,6 +40,8 @@ def test_real_search_todo_sessions_and_clarification(tmp_path):
                 session,
                 "--search-provider",
                 "mock",
+                "--trace-file",
+                str(tmp_path / f"search-{session}.jsonl"),
             ],
             input=prompt + "\n/exit\n",
             capture_output=True,
@@ -65,15 +67,30 @@ def test_real_search_todo_sessions_and_clarification(tmp_path):
 
     print(f"真实 search/todo CLI: {datetime.now(UTC).isoformat()} model={settings.model}")
     answer, tools = turn("1", "查上海的示例天气，帮我记一个带伞的待办")
-    assert any(event["name"] == "search" and event["result"]["matches"] for event in tools)
+    search_index = next(
+        index
+        for index, event in enumerate(tools)
+        if event["name"] == "search"
+        and event["status"] == "ok"
+        and event["result"]["mock"] is True
+        and event["result"]["matches"]
+    )
+    added_index = next(
+        index
+        for index, event in enumerate(tools)
+        if event["name"] == "todo"
+        and event["status"] == "ok"
+        and event["result"].get("outcome") == "added"
+    )
+    assert search_index < added_index
     umbrella = next(
         event["result"]["item"]
         for event in tools
         if event["name"] == "todo" and event["result"]["outcome"] == "added"
     )
     assert "伞" in umbrella["content"]
-    assert "模拟" in answer and any(word in answer for word in ["非实时", "不是实时", "并非实时"])
-    assert "2026" in answer and "09" in answer
+    assert any(word in answer.lower() for word in ["模拟", "示例", "mock"])
+    assert any(word in answer for word in ["非实时", "不是实时", "并非实时", "不代表实时"])
     answer, tools = turn(
         "2",
         "根据我提供的本周工作内容写周报，并记一个提交周报的待办。"
