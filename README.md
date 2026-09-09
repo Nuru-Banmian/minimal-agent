@@ -4,9 +4,20 @@
 
 当前支持普通对话、calculator 四则运算、mock/Tavily 搜索、持久 todo、基础 session memory，以及 Issue #7 的异常恢复和 JSONL 执行日志。同步、非流式；模型显式返回的行动说明可以出现在 trace 中，但不读取或展示隐藏推理。
 
+最终验收入口：[Issue #8 验收报告与逐项矩阵](docs/acceptance.md)、[实际开发与运行时 Prompt](docs/prompts.md)。下文 #6/#7 的测试计数和状态是历史记录，当前结果以验收报告为准。#8 的新增材料在本地分支 `codex/issue-8-acceptance`，尚未推送；等待用户审阅，不自动关闭总规格或合并 main。
+
+已发布且本轮核对可访问的[代码基线 e439144](https://github.com/Nuru-Banmian/minimal-agent/tree/e43914454e26b4eba0fbd6561043148412d5280c)包含 #7。GitHub main 当前仍为 #6 合并版本；以上链接不代表 #8 已发布。
+
 ## 安装与启动
 
 需要 Python 3.11+。在项目根目录的 PowerShell 执行（已有 `.venv` 时跳过创建）：
+
+首次下载可执行以下命令；该远程分支提供 #7 基线。#8 新增验收文件发布前，请在本地交付分支使用它们。
+
+```powershell
+git clone --branch codex/recovery-trace https://github.com/Nuru-Banmian/minimal-agent.git
+Set-Location minimal-agent
+```
 
 ```powershell
 py -3.13 -m venv .venv
@@ -72,6 +83,23 @@ Tavily 请求使用 basic 模式、最多 5 条结果，不请求全文或服务
 完成待办前模型需 list 当前 ID；目标缺失或歧义时先澄清。SQL 强制身份隔离，complete 重复执行返回 already_completed，未知 ID 返回 not_found。自然语言歧义识别依赖模型；没有宣称其永远准确。
 
 ## 一次 turn 如何运行
+
+```mermaid
+flowchart TD
+    U[用户输入 / CLI] --> R[Runtime：持有 turn 和循环上限]
+    R <--> S[(SQLite：历史、摘要、待办、恢复记录)]
+    R --> C[构建 context / 预算 / 必要时摘要]
+    C --> M[ModelClient / 阿里云兼容 API]
+    M --> D{返回 tool_calls?}
+    D -->|有| T[ToolRegistry：解析 JSON / Schema 校验 / 串行执行]
+    T --> K[calculator / mock 或 Tavily search / todo]
+    K --> P[回填匹配调用 ID 的 tool 结果]
+    P --> C
+    D -->|无且有完整答案| A[保存完整 turn / 输出答案]
+    R --> L[脱敏 JSONL trace]
+```
+
+`default_registry` 用名称、描述、JSON Schema 和 Python callable 注册工具，Schema 经 `definitions()` 发给模型。`ModelClient` 转换原生 `tool_calls`，保留调用 ID、函数名与 JSON arguments；注册表拒绝未知工具、畸形 JSON 与不合 Schema 的参数，再调用 Python 函数。模型通过工具结果继续决定下一步，不使用输入关键词分支代替模型决策。todo 的身份与执行键由应用注入，模型不能传入别人的 user/session。
 
 每条用户输入是一个 turn；其中每次主模型请求是一个 step，默认最多 8 次。执行顺序：
 

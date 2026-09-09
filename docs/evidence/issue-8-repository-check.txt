@@ -1,0 +1,7 @@
+Current tracked and intended files checked: 49
+Reachable historical blobs checked against configured secret values: 105
+Configured secret value matches: 0
+Forbidden historical paths (.env, venv, logs, SQLite/database files): 0
+Scope: Git reachable history and current intended files; not unreachable objects or all unknown secret formats.
+CONTEXT.md remains untracked and is excluded from changes.
+exit_code=0
